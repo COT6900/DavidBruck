@@ -444,6 +444,37 @@ doubleOne == doubleOne
 
 #### Problem 1
 
+Functions we are copying from the book, C10P1BookFunctions.hs :
+
+```haskell
+module C10P1BookFunctions
+    ( value
+    , Expr (..)
+    ) where
+
+-- |Book reference data type 'Expr'
+data Expr = Val Integer | Add Expr Expr
+-- |Book reference function 'value'
+value (Val n)   = n
+value (Add x y) = value x + value y
+
+-- |Book reference type 'Cont'
+type Cont   = [Op]
+-- |Book reference data type 'Op'
+data Op     = EVAL Expr | ADD Integer
+
+-- |Book reference function 'eval'
+eval (Val n) c      = exec c n
+eval (Add x y) c    = eval x $ EVAL y : c
+
+-- |Book reference data type 'exec'
+exec [] n           = n
+exec (EVAL y : c) n = eval y (ADD n : c)
+exec (ADD n : c) m  = exec c (n + m)
+```
+
+
+
 C10P1.hs :
 
 ```haskell
@@ -456,13 +487,18 @@ module C10P1
     ( multiply
     ) where
 
+import C10P1BookFunctions
+    ( value
+    , Expr (..)
+    )
+
 {-|
-    Using only mathematical (+) addition and (-) subtraction operators,
-    finds the product of two natural numbers
+    Using only 'C10P1BookFunctions.Add', 'multiply' creates an expression
+    tree which can be evaluated to the the product of two natural numbers
 -}
-multiply x y | x == 0       = 0
-             | x == 1       = y
-             | otherwise    = y + multiply (x - 1) y
+multiply x y = value $ mult x y where 
+    mult 0 y = Val 0
+    mult x y = Add (Val y) (mult (x - 1) y)
 ```
 
 

@@ -8,6 +8,7 @@ build-type:     Simple
 library
   exposed-modules:
       C10P1
+    , C10P1BookFunctions
   other-modules:
       Paths_p1
   hs-source-dirs:

@@ -7,10 +7,15 @@ module C10P1
     ( multiply
     ) where
 
+import C10P1BookFunctions
+    ( value
+    , Expr (..)
+    )
+
 {-|
-    Using only mathematical (+) addition and (-) subtraction operators,
-    finds the product of two natural numbers
+    Using only 'C10P1BookFunctions.Add', 'multiply' creates an expression
+    tree which can be evaluated to the the product of two natural numbers
 -}
-multiply x y | x == 0       = 0
-             | x == 1       = y
-             | otherwise    = y + multiply (x - 1) y
+multiply x y = value $ mult x y where 
+    mult 0 y = Val 0
+    mult x y = Add (Val y) (mult (x - 1) y)
