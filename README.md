@@ -4,6 +4,8 @@ The full LICENSE is included as file [LICENSE](LICENSE)
 
 [Week 1](Week1)
 
+[Week 2](Week2)
+
 ... additional weeks will be added weekly till course completion ...
 
 ### Tentative assignments:
@@ -81,6 +83,7 @@ Assignment excercises:
 >    term ::= factor (* term | / term | )
 >    ```
 
+   **Note: the book-referenced source code from https://www.cs.nott.ac.uk/~pszgmh/pih.html included calculator.hs which already implemented ability to parse operators (-) / (/) so instead I will solve a different problem. I will be adding support for operator (√) for integer square root, and I will be adding the ability to use alternate syntaxes. For example, you can use "sqrt" for square root and for problem 7 we can also use (^) for "to the power of". -David**  
 8.7  Further extend the grammar and parser for arithmetic expressions to support exponentiation, which is assumed to associate to the right and have higher priority than multiplication and division, but lower priority than parentheses and numbers. For example, `2 ↑ 3 ∗ 4` means `(2 ↑ 3) ∗ 4`.
 
 ##### Week 3:
