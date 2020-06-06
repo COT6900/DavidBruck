@@ -8,13 +8,13 @@ module C10P1
     ) where
 
 import C10P1BookFunctions
-    ( value
-    , Expr (..)
+    ( add
+    , Nat (..)
     )
 
 {-|
-    Using only 'C10P1BookFunctions.Add', 'multiply' creates an expression
+    Using only 'C10P1BookFunctions.add', 'multiply' creates an expression
     tree which can be evaluated to the the product of two natural numbers
 -}
-multiply (Val 0) y  = Val 0
-multiply x y        = Add y (multiply (Val (value x - 1)) y)
+multiply x Zero     = Zero
+multiply x (Succ y) = add x $ multiply x y

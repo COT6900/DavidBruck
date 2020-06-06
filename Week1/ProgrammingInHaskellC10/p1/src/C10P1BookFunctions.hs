@@ -1,24 +1,21 @@
 module C10P1BookFunctions
-    ( value
-    , Expr (..)
+    ( nat2int
+    , int2nat
+    , add
+    , Nat (..)
     ) where
 
--- |Book reference data type 'Expr'
-data Expr = Val Integer | Add Expr Expr
--- |Book reference function 'value'
-value (Val n)   = n
-value (Add x y) = value x + value y
+-- |Book reference data type 'Nat'
+data Nat = Zero | Succ Nat
 
--- |Book reference type 'Cont'
-type Cont   = [Op]
--- |Book reference data type 'Op'
-data Op     = EVAL Expr | ADD Integer
+-- |Book reference function 'nat2int'
+nat2int Zero        = 0
+nat2int (Succ n)    = 1 + nat2int n
 
--- |Book reference function 'eval'
-eval (Val n) c      = exec c n
-eval (Add x y) c    = eval x $ EVAL y : c
+-- |Book reference function 'int2nat'
+int2nat 0 = Zero
+int2nat n = Succ $ int2nat (n - 1)
 
--- |Book reference data type 'exec'
-exec [] n           = n
-exec (EVAL y : c) n = eval y (ADD n : c)
-exec (ADD n : c) m  = exec c (n + m)
+-- |Book reference function 'add'
+add Zero n      = n
+add (Succ m) n  = Succ $ add m n

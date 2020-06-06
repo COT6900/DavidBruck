@@ -62,11 +62,10 @@
   `C:\MinGW\msys\1.0\msys.bat`
 
 * Download and build Haskell IDE Engine (hie) source code from GitHub with commands:  
-  `git clone https://github.com/haskell/haskell-ide-engine --recurse-submodules`
+  `git clone https://github.com/haskell/haskell-ide-engine --recurse-submodules`  
   `cd haskell-ide-engine`  
   `git checkout tags/1.4`  
   `certutil.exe -urlcache -split -f "https://downloads.haskell.org/~cabal/cabal-install-3.2.0.0/cabal-install-3.2.0.0-x86_64-unknown-mingw32.zip" cabal-install-3.2.0.0-x86_64-unknown-mingw32.zip`  
-
   `$WINDIR\\System32\\tar.exe -xf cabal-install-3.2.0.0-x86_64-unknown-mingw32.zip`  
   `stack --skip-ghc-check exec --no-ghc-package-path -- cabal update`  
   `stack exec --no-ghc-package-path -- cabal v2-run ./install.hs --project-file=install\\shake.project hie`
@@ -448,29 +447,26 @@ Functions we are copying from the book, C10P1BookFunctions.hs :
 
 ```haskell
 module C10P1BookFunctions
-    ( value
-    , Expr (..)
+    ( nat2int
+    , int2nat
+    , add
+    , Nat (..)
     ) where
 
--- |Book reference data type 'Expr'
-data Expr = Val Integer | Add Expr Expr
--- |Book reference function 'value'
-value (Val n)   = n
-value (Add x y) = value x + value y
+-- |Book reference data type 'Nat'
+data Nat = Zero | Succ Nat
 
--- |Book reference type 'Cont'
-type Cont   = [Op]
--- |Book reference data type 'Op'
-data Op     = EVAL Expr | ADD Integer
+-- |Book reference function 'nat2int'
+nat2int Zero        = 0
+nat2int (Succ n)    = 1 + nat2int n
 
--- |Book reference function 'eval'
-eval (Val n) c      = exec c n
-eval (Add x y) c    = eval x $ EVAL y : c
+-- |Book reference function 'int2nat'
+int2nat 0 = Zero
+int2nat n = Succ $ int2nat (n - 1)
 
--- |Book reference data type 'exec'
-exec [] n           = n
-exec (EVAL y : c) n = eval y (ADD n : c)
-exec (ADD n : c) m  = exec c (n + m)
+-- |Book reference function 'add'
+add Zero n      = n
+add (Succ m) n  = Succ $ add m n
 ```
 
 
@@ -488,16 +484,16 @@ module C10P1
     ) where
 
 import C10P1BookFunctions
-    ( value
-    , Expr (..)
+    ( add
+    , Nat (..)
     )
 
 {-|
-    Using only 'C10P1BookFunctions.Add', 'multiply' creates an expression
+    Using only 'C10P1BookFunctions.add', 'multiply' creates an expression
     tree which can be evaluated to the the product of two natural numbers
 -}
-multiply (Val 0) y  = Val 0
-multiply x y        = Add y (multiply (Val (value x - 1)) y)
+multiply x Zero     = Zero
+multiply x (Succ y) = add x $ multiply x y
 ```
 
 
@@ -510,13 +506,14 @@ module Main where
 import C10P1
 
 import C10P1BookFunctions
-    ( value
-    , Expr (..)
+    ( nat2int
+    , int2nat
+    , Nat (..)
     )
 
 -- |Tests 'C10P1.multiply' with hardcoded parameters 5 and 6 with expected result: 30
 main :: IO ()
-main = print $ value $ multiply (Val 5) (Val 6)
+main = print $ nat2int $ multiply (int2nat 5) (int2nat 6)
 ```
 
 
