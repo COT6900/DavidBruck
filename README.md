@@ -97,10 +97,10 @@ Assignment excercises:
 9.4  Produce an editor that allows the user to interactively create and modify the content of the board in the game of life.  
 9.6  Nim is a game that is played on a board comprising five numbered rows of stars, which is initially set up as follows:
 
->    1 : * * * * *
->    2 : * * \**
->    3 : * * *
->    4 : \**
+>    1 : * * * * *  
+>    2 : * * \**  
+>    3 : * * *  
+>    4 : \**  
 >    5 : *
 
     Two players take it in turn to remove one or more stars from the end of a single row. The winner is the player who removes the last star or stars from the board. Implement the game of nim in Haskell.  
@@ -112,9 +112,9 @@ Assignment exercises:
 11.Applicative functors  
    Like normal functors, applicative functors come with a few laws. The most important one is the one that we already mentioned, namely that pure `f <*> x = fmap f x` holds. As an exercise, you can prove this law for some of the applicative functors that we've met in this chapter.The other functor laws are:
 
->    `pure id <*> v = v`
->    `pure (.) <*> u <*> v <*> w = u <*> (v <*> w)`
->    `pure f <*> pure x = pure (f x)`
+>    `pure id <*> v = v`  
+>    `pure (.) <*> u <*> v <*> w = u <*> (v <*> w)`  
+>    `pure f <*> pure x = pure (f x)`  
 >    `u <*> pure y = pure ($ y) <*> u`
 
 12.A knight's quest  
