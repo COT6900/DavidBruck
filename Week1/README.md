@@ -496,9 +496,8 @@ import C10P1BookFunctions
     Using only 'C10P1BookFunctions.Add', 'multiply' creates an expression
     tree which can be evaluated to the the product of two natural numbers
 -}
-multiply x y = value $ mult x y where 
-    mult 0 y = Val 0
-    mult x y = Add (Val y) (mult (x - 1) y)
+multiply (Val 0) y  = Val 0
+multiply x y        = Add y (multiply (Val (value x - 1)) y)
 ```
 
 
@@ -510,9 +509,14 @@ module Main where
 
 import C10P1
 
+import C10P1BookFunctions
+    ( value
+    , Expr (..)
+    )
+
 -- |Tests 'C10P1.multiply' with hardcoded parameters 5 and 6 with expected result: 30
 main :: IO ()
-main = print (multiply 5 6)
+main = print $ value $ multiply (Val 5) (Val 6)
 ```
 
 

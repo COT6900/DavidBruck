@@ -16,6 +16,5 @@ import C10P1BookFunctions
     Using only 'C10P1BookFunctions.Add', 'multiply' creates an expression
     tree which can be evaluated to the the product of two natural numbers
 -}
-multiply x y = value $ mult x y where 
-    mult 0 y = Val 0
-    mult x y = Add (Val y) (mult (x - 1) y)
+multiply (Val 0) y  = Val 0
+multiply x y        = Add y (multiply (Val (value x - 1)) y)
