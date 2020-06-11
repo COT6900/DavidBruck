@@ -605,7 +605,7 @@ Functions starting from book supplementary source code file named calculator.hs 
 
 ```haskell
 {-|
-Module      : C1P6 and P7
+Module      : C8P6 and P7
 Description : Programming in Haskell, chapter 8, problems 6 & 7
 Maintainer  : David Bruck
 -}
