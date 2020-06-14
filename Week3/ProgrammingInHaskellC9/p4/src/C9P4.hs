@@ -1,3 +1,8 @@
+{-|
+Module      : C9P4
+Description : Programming in Haskell, chapter 9, problem 4
+Maintainer  : David Bruck
+-}
 {-# LANGUAGE LambdaCase #-}
 module C9P4
     ( lifeEditor
@@ -39,6 +44,11 @@ data EditorData = EditorData {
 }
 
 startingState = EditorData (1, 1) False []
+
+{-|
+    Commandline interface editor for the "Game of Life".
+    Allows starting the game with the custom board once done editing.
+-}
 lifeEditor = instructions >> do runStateT editorImpl startingState
                                 return () where
     instructions = do
