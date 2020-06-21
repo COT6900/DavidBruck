@@ -56,7 +56,7 @@ values (Val n)      = [n]
 values (App _ l r)  = values l ++ values r
 
 -- modification: generalized integrals includes negatives for problem 5 -David
-eval _ (Val n)                  = [n | n > 0]
+eval generalized (Val n)        = [n | generalized || n > 0]
 eval generalized (App o l r)    = [apply o x y | x <- eval generalized l,
                                                  y <- eval generalized r,
                                                  valid generalized o x y]
