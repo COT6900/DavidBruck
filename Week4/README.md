@@ -239,7 +239,7 @@ main = do putStrLn "Starting computation to find length of valid expressions,"
 
 #### Problem 2
 
-**Note:** inductive reasoning does not display well on GitHub.com since it does not have a mathematic $\LaTeX$ plugin. I will be providing PDFs rendered from [Typora](https://typora.io/), which an also be used to view the README.md.
+**Note:** inductive reasoning does not display well on GitHub.com since it does not have a mathematic $\LaTeX$ plugin. I will be providing PDFs rendered from [Typora](https://typora.io/), which can also be used to view the README.md.
 
 Book definitions:
 
@@ -461,11 +461,11 @@ Haskell is able to infer types for parameters to functions (including operators)
 f :: forall a b. a -> b
 ```
 
-We can read this function as for all generically-typed parameter whose type's name is `a`, take an input and output another unrestricted type (but possibly the same type). This does not help us reason what the function might do, but we might assume it actually actually transforms an input.
+We can read this function as for all generically-typed parameter whose type's name will be represented by `a`, take an input and output another unrestricted type `b` (but possibly also the same type as `a`). This does not help us reason what the function might do, but we might assume it actually transforms an input.
 
 
 
-The first restriction we can place is return the same typed output as the input, but the now singular type is still otherwise not restricted:
+The first restriction we can place is return the same type output as the input, but the now singular type is still otherwise not restricted:
 
 ```haskell
 f :: forall a. a -> a
@@ -481,7 +481,7 @@ However, the language cannot be built from completely non-restrictive functions 
 (+) :: forall a. (Num a) => a -> a -> a
 ```
 
-Now, by reading the type signature alone, we know the function can take in two parameters which are type-restricted to be sort sort of number (but specifically the same sort), and output another number. This is powerful, by the name `(+)` and type signature alone, we can infer how the function will behave.
+Now, by reading the type signature alone, we know the function can take in two parameters which are type-restricted to be a sort of number (but specifically the same sort), and output another number. This is powerful, by the name `(+)` and type signature alone, we can infer how the function will behave.
 
 
 
@@ -501,12 +501,11 @@ However, if we make a new function like so:
 add2 = `+` 2
 ```
 
-Haskell now sees function `` `+` x y `` in the function body, sees it is applied one of 2 of its parameters (specifically x) and returns a partially applied function ready to receive `y`. Also, we now can infer the resulting functions type (exactly how Haskell is able to be programmed with a powerful type inference system):
+Haskell now sees function `` `+` x y `` in the function body, sees it is applied one of 2 of its parameters (specifically x) and returns a partially applied function ready to receive `y`. Also, we now can infer the resulting function's type (exactly how Haskell is able to be programmed with a powerful type inference system):
 
 ```haskell
 add2 :: forall a. (Num a) => a -> a
 ```
-
 
 
 Therefore, it is logical that Haskell simply reads through all the available information and sees if there is some combination of type restrictions which satisfies all the function bodies, and returns types which are as unrestricted as possible except for the minimal restrictions required. This is how we can only very rarely need to add type descriptions ourselves when writing code.
