@@ -17,7 +17,7 @@ import Control.Error.Safe
     )
 
 {-
-    'Birds' and 'Pol' types were provided from Learn You a Haskell website,
+    'Birds' and 'Pole' types were provided from Learn You a Haskell website,
     chapter 12, A Fistful of Monads, "Walk the line":
     http://learnyouahaskell.com/a-fistful-of-monads
 
