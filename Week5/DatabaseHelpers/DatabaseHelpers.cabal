@@ -1,0 +1,22 @@
+cabal-version: 1.12
+
+name:           DatabaseHelpers
+version:        0.1.0.0
+author:         David Bruck
+build-type:     Simple
+
+library
+  exposed-modules:
+      DatabaseHelpers
+  other-modules:
+      Paths_DatabaseHelpers
+  hs-source-dirs:
+      src
+  build-depends:
+      base >=4.7 && <5
+    , errors
+    , mtl
+    , text
+    , unordered-containers ==0.2.10.0
+    , direct-sqlite ==2.3.26
+  default-language: Haskell2010

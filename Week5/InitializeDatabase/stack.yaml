@@ -1,0 +1,6 @@
+resolver: lts-15.13
+packages:
+- .
+- ..\DatabaseHelpers
+extra-deps:
+- direct-sqlite-2.3.26

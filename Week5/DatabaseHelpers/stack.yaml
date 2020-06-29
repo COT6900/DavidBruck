@@ -1,0 +1,6 @@
+resolver: lts-15.13
+packages:
+- .
+extra-deps:
+- direct-sqlite-2.3.26
+- unordered-containers-0.2.10.0
