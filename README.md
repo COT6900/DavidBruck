@@ -6,9 +6,11 @@ The full LICENSE is included as file [LICENSE](LICENSE)
 
 [Week 2](Week2)
 
-... additional weeks will be added weekly till course completion ...
+[Week 3](Week3)
 
-### Tentative assignments:
+[Week 4](Week4)
+
+[Week 5](Week5) - Work in progress. Able to use Template Haskell to create strongly typed Haskell datatypes based on table schema.
 
 ##### Week 1:
 
@@ -154,6 +156,8 @@ Module topic: advanced language constructs
 https://wiki.haskell.org/A_practical_Template_Haskell_Tutorial  
 Assignment exercises:  
    Write a Code Generator with Template Haskell to make object relational mapping (ORM) functions for CRUD operations on a database from a schema definition.
+
+*Work-in-progress:* Code Generator is only partially completely. Currently, it can create strongly typed Haskell datatypes based on table schema. However, it still was supposed to be able to dynamically create typed Query and Create/Insert functions. Neither the work to parse the IMDB database into SQLite nor to host the database on a website has yet been started.
 
 https://hackage.haskell.org/package/http-server  
 Assignment exercises:  
