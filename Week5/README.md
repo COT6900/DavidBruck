@@ -1,12 +1,12 @@
-### David Bruck COT6900 - Week 5
+### David Bruck COT6900 - Week 5, 6
 
 ### Database helpers for SQLite
 
 I added 3 public database helper functions:
 
 * `withDatabase`: Opens a connection to a SQLite database and creates the database if it does not exist. While the connection is open, it calls a provided callback function with the open database connection. It always closes the connection once the callback function returns, and aggregates exceptions.
-* `databaseQuery`: Takes a SQL string, open database connection (from `withDatabase`), parameters, and a transformer (to allow us to turn dynamically-typed arrays of column results into strongly-typed Haskell datatypes).
-* `getSchema`: Queries tables and virtual tables (e.g. FullText search tables) and includes their names, types, and columns (which themselves have names, types, nullability, primary key). This is used by the Template Haskell to automatically build strongly-typed Haskell datatypes corresponding to the types and nullability for each field's original column.
+* `databaseQuery`: Takes a SQL string, open database connection (from `withDatabase`), parameters, and a transformer (to allow us to turn dynamically-typed arrays of column results into strongly-typed Haskell datatypes). Runs the parameterized SQL, transforms the untyped, and returns them typed.
+* `getSchema`: Queries tables and virtual tables (e.g. FullText search tables) and includes their names, types, and columns (which themselves have names, types, nullability, primary key). This is used by the Template Haskell to automatically build strongly-typed Haskell datatypes and queries corresponding to the types and nullability for each field's original column.
 
 DatabaseHelpers/src/DatabaseHelpers.hs :
 
@@ -15,8 +15,12 @@ module DatabaseHelpers
     ( getSchema
     , withDatabase
     , databaseQuery
+    , validMaybeText
+    , validMaybeInt
     , SchemaColumn(..)
     , SchemaTable(..)
+    , TableType(..)
+    , SQLStringException(..)
     ) where
 
 import Control.Exception
@@ -160,12 +164,11 @@ getSchema conn =
             | Just endingLength <- matchFullTextStorageEnding
                                        tableName
                                        fullTextStorageEndings
-            , True              <-
-                isFullTextTable
-                    $ take (length tableName - endingLength) tableName =
-                        FullTextStorage
-            | True              <- isFullTextTable tableName    = FullText
-            | otherwise                                         = Table
+            , isFullTextTable
+                  $ take (length tableName - endingLength) tableName =
+                      FullTextStorage
+            | isFullTextTable tableName = FullText
+            | otherwise                 = Table
         isFullTextTable tableName =
             all
                 (\ending -> Data.HashSet.member
@@ -198,7 +201,7 @@ getSchema conn =
 
     nameTransformer [SQLText name]  = return name
     nameTransformer _                   =
-        throwIO $ SQLStringException "expecting just SQLText column"
+        throwIO $ SQLStringException "expecting schema columns (Text NOT NULL)"
 
     schemaTransformer
         [ SQLInteger cid
@@ -218,15 +221,23 @@ getSchema conn =
                          (maybeText dflt_value)
                          pk
         where
-        validMaybeText maybeText
-            | SQLNull   <- maybeText    = True
-            | SQLText _ <- maybeText    = True
-            | otherwise                 = False
         maybeText SQLNull               = Nothing
         maybeText (SQLText value)       = Just value
     schemaTransformer _ =
         throwIO $ SQLStringException
-            "expecting schema columns (Int, Text, Text, Int, Text NULL, Int)"
+            ( "expecting schema columns (Int NOT NULL, Text NOT NULL, " ++
+              "Text NULL, Int NOT NULL, Text NULL, Int NOT NULL)"
+            )
+
+validMaybeText maybeText
+    | SQLNull   <- maybeText    = True
+    | SQLText _ <- maybeText    = True
+    | otherwise                 = False
+
+validMaybeInt maybeInt
+    | SQLNull       <- maybeInt = True
+    | SQLInteger _  <- maybeInt = True
+    | otherwise                 = False
 
 withDatabase :: (Database.SQLite3.Direct.Database ->
                     ExceptT SomeException IO a) ->
@@ -342,7 +353,7 @@ instance Exception InitializationException
 main :: IO ()
 main = do result <- runExceptT $ initializeDatabase `withDatabase` "IMDB.db"
           case result of
-              Left err -> print $ "Error: " ++ show err
+              Left err -> Prelude.error $ "Error: " ++ show err
               Right _  -> putStrLn "Success"
     where
     initializeDatabase conn =
@@ -379,51 +390,102 @@ main = do result <- runExceptT $ initializeDatabase `withDatabase` "IMDB.db"
 
 ### Template Haskell CRUD Generator
 
-Work-in-progress. Right now, the Template Haskell `$(generateCrud "IMDB.db")` will generate datatypes for all the tables and virtual tables in the SQLite database file specified by its string parameter "IMDB.db".
+Template Haskell `$(generateCrud "<<path_to_SQLite_db_file>>")` will generate datatypes for all the tables and virtual tables in the SQLite database file specified by its string parameter.
+
+Generated types:
+
+* Datatypes `<<TableName>>` with fields `<<tableName>>_<<columnName>>` for each column. A special additional column is created for `rowid` only for FullText type tables.
+* For normal tables, queries `get<<TableName>>` taking a `limit` parameter for the number of records to return, in the order of the primary key ascending.
+* Also for normal tables, queries `get<<TableName>>By<<ColumnName>>` taking an array of values (`query` parameter) to find in a single column as well as the same `limit` parameter.
+  * If the query is empty, no records are returned.
+  * If the query has exactly one non-`Nothing` value, it produces a SQL `WHERE <<column_name>> = ?`.
+  * If the query has exactly one value and it's `Nothing`, it produces a SQL `WHERE <<column_name>> IS NULL`.
+  * And finally, if the query has more than one value, it produces a SQL `WHERE <<column_name>> IN (?, ?, ..., ?)` for all queried inputs.
+* For FullText tables, queries `get<<TableName>>By<<ColumnName>>` for the column to search. Takes a `query` parameter which will be split by words, having each suffixed with special `'*'` wildcard character. Builds SQL like ``WHERE <<column_name>> MATCH ?` and adds `ORDER BY rank` which is special for FullText tables to return results in order from best to worst match.
 
 ![TemplateHaskellExampleOutput](TemplateHaskellExampleOutput.png)
 
 
 
-CrudGenerator/src/CrudTemplates.hs :
+CrudGenerator/src/CrudGenerator.hs :
 
 ```haskell
-module CrudTemplates
+{-# LANGUAGE TemplateHaskell #-}
+module CrudGenerator
     ( generateCrud
     ) where
 
 import DatabaseHelpers
     ( withDatabase
     , getSchema
+    , validMaybeText
+    , validMaybeInt
+    , databaseQuery
     , SchemaColumn(..)
     , SchemaTable(..)
+    , TableType(..)
+    , SQLStringException(..)
     )
 import Data.Text
     ( unpack
+    , pack
+    , null
     )
 import Data.Char
     ( toUpper
     , toLower
     )
+import Data.List
+    ( intercalate
+    )
 import Data.Maybe
-    ( isNothing
+    ( fromJust
     )
-import Control.Applicative
-    ( (<$>)
-    )
-
 import Control.Monad.Except
     ( runExceptT
+    , ExceptT
     )
 import Control.Exception
     ( toException
     , throw
+    , throwIO
     , SomeException
     , Exception
     )
-
-import Control.Monad
+import Database.SQLite3
+    ( SQLData(..)
+    )
 import Language.Haskell.TH
+    ( runIO
+    , recC
+    , dataD
+    , derivClause
+    , mkName
+    , varBangType
+    , bangType
+    , bang
+    , conT
+    , conE
+    , conP
+    , sigD
+    , funD
+    , varP
+    , varE
+    , varT
+    , litT
+    , litE
+    , clause
+    , normalB
+    , guardedB
+    , listP
+    , appE
+    , patGE
+    , noBindS
+    , stringE
+    , wildP
+    , SourceUnpackedness(..)
+    , SourceStrictness(..)
+    )
 
 newtype UnhandledSchemaException = UnhandledSchemaException
     { error :: String
@@ -431,7 +493,6 @@ newtype UnhandledSchemaException = UnhandledSchemaException
 
 instance Exception UnhandledSchemaException
 
-generateCrud :: String -> Q [Dec]
 generateCrud filePath = runIO getDatabaseSchema >>= crudFromSchema
 
     where
@@ -445,69 +506,458 @@ generateCrud filePath = runIO getDatabaseSchema >>= crudFromSchema
                                   $ UnhandledSchemaException
                                         "uninitialized database"
     crudFromSchema tables   =
-        do let dataTypes = generateDataTypes tables
-           -- queries      <- generateQueries tables
-           return dataTypes
+        do dataTypes        <- generateDataTypes tables
+           transformers     <- generateTransformers tables
+           queries          <- generateQueries tables
+           return $ dataTypes ++ transformers ++ queries
 
-    generateDataTypes []        = []
+    generateDataTypes []        = pure []
     generateDataTypes (x:xs)    =
-        DataD
-            []
-            capitalizedName
-            []
-            Nothing
-            [fields]
-            []
-        : generateDataTypes xs
+        do columns <- crudFields $ tableColumns x
+           fields <- recC capitalizedName (map return columns)
+           dataType <- dataD
+                           (pure [])
+                           capitalizedName
+                           []
+                           Nothing
+                           [pure fields]
+                           [derivClause Nothing [[t| Show |]]]
+           rest <- generateDataTypes xs
+           return (dataType : rest)
 
         where
-        name = unpack $ tableName x
-        capitalizedName = mkName $ capitalize name
-        columns = crudFields name $ tableColumns x
-        fields = RecC capitalizedName columns
+        unpackedTableName = unpack $ tableName x
+        capitalizedName = mkName $ capitalize unpackedTableName
+        lowecasedName = lowercase unpackedTableName
 
-    -- generateQueries []      = []
-    -- generateQueries (x:xs)  =
-    --     do 
+        crudFields []     = pure []
+        crudFields (x:xs) =
+            do field <- varBangType
+                            (mkName (lowecasedName ++ "_" ++ unpack (name x)))
+                            (bangType
+                                (bang
+                                    (pure NoSourceUnpackedness)
+                                    (pure NoSourceStrictness))
+                                (columnType x))
+               rest <- crudFields xs
+               return (field : rest)
+
+            where
+            columnType column =
+                columnTypeTextOrInt
+                    (makeType "String" notnullInt)
+                    (makeType "Int" notnullInt)
+                    column
+
+                where
+                notnullInt = notnull column
+
+        makeType haskellType notnull =
+            if notnull == 1
+            then conT $ mkName haskellType
+            else [t| Maybe $(conT $ mkName haskellType) |]
+
+    generateTransformers []      = pure []
+    generateTransformers (x:xs)  =
+        do transformerType  <- sigD
+                                   transformerName
+                                   [t| [SQLData] -> IO $(conT capitalizedName) |]
+           transformer      <- funD
+                                   transformerName
+                                   [ if all ((==1) . notnull) $ tableColumns x
+                                     then simpleTransformer
+                                     else maybeTransformer
+                                   , transformerError
+                                   ]
+           rest             <- generateTransformers xs
+           return (transformerType : transformer : rest)
+
+        where
+        (unpackedTableName, transformerName, columns) = commonTableProps x
+        capitalizedName = mkName $ capitalize unpackedTableName
+
+        transformerArgs []      = []
+        transformerArgs (x:xs)  =
+            (if notnull x == 1
+             then columnTypeTextOrInt textArg intArg x
+             else argName)
+            : transformerArgs xs
+
+            where
+            argName         = varP $ makeColumnName x
+            textArg         = [p| SQLText $(argName) |]
+            intArg          = [p| SQLInteger $(argName) |]
+
+        transformerError =
+            clause
+                [varP $ mkName "_"]
+                (normalB [e| throwIO $ SQLStringException
+                                 $(stringE
+                                     $ "for table " ++ unpackedTableName ++
+                                       ", expecting schema columns (" ++
+                                       intercalate ", " (map
+                                           (\column ->
+                                               maybe
+                                                   "TEXT"
+                                                   unpack
+                                                   (notEmptyColumnType
+                                                       $ type' column) ++
+                                               (if notnull column == 1
+                                                then " NOT"
+                                                else "") ++
+                                               " NULL")
+                                           columns) ++
+                                       ")"
+                                 )
+                         |])
+                []
+
+            where
+            notEmptyColumnType columnType
+                | Just txt <- columnType
+                , Data.Text.null txt    = Nothing
+                | otherwise             = columnType
+
+        simpleTransformer =
+            clause
+                [listP $ transformerArgs columns]
+                (normalB $ transform columns)
+                []
+
+        maybeTransformer =
+            clause
+                [listP $ transformerArgs columns]
+                (guardedB
+                    [patGE
+                        (maybeTransformerGuards columns)
+                        [e| pure $(transform columns) |]])
+                []
+
+        transform columns =
+            do let constructor = conE capitalizedName
+               transformImpl constructor columns
+
+            where
+            transformImpl earlier []        = earlier
+            transformImpl earlier (x:xs)    =
+                do let appended = appE earlier transformColumn
+                   transformImpl appended xs
+
+                where
+                columnName = makeColumnName x
+                transformColumn
+                    | notnull x == 1 =
+                        columnTypeTextOrInt unpackText fromIntegralInt64 x
+                    | otherwise =
+                        [e| case $(varE columnName) of
+                                SQLNull -> Nothing
+                                $(columnTypeTextOrInt
+                                    (conP
+                                        'SQLText
+                                        [[p| $(varP columnName) |]])
+                                    (conP
+                                        'SQLInteger
+                                        [[p| $(varP columnName) |]])
+                                    x) -> Just
+                                        $(columnTypeTextOrInt
+                                            unpackText
+                                            fromIntegralInt64
+                                            x) |]
+
+                    where
+                    unpackText          = [e| unpack $(varE columnName) |]
+                    fromIntegralInt64   = [e| fromIntegral $(varE columnName) |]
+
+        maybeTransformerGuards []       = []
+        maybeTransformerGuards (x:xs)   =
+            do let columnName = makeColumnName x
+               (if notnull x == 1
+                then id
+                else (:) $ noBindS $ columnTypeTextOrInt
+                             [e| validMaybeText $(varE columnName) |]
+                             [e| validMaybeInt $(varE columnName) |]
+                             x)
+                   $ maybeTransformerGuards xs
+
+    generateQueries []      =
+        do emptySig <- sigD
+                           getEmpty
+                           [t| ExceptT SomeException IO [$(varT $ mkName "a")] |]
+           getEmpty <- funD
+                           getEmpty
+                           [clause
+                                []
+                                (normalB [e| pure [] |])
+                                []]
+           return [emptySig, getEmpty]
+
+    generateQueries (x:xs)  =
+        case tableType x of
+            Table       -> do tableQueries  <- generateTableQueries columns
+                              rest          <- generateQueries xs
+                              return $ tableQueries ++ rest
+            FullText    -> do fullText      <- generateFullTextQueries columns
+                              rest          <- generateQueries xs
+                              return $ fullText ++ rest
+            _           -> throw $ toException
+                               $ UnhandledSchemaException
+                               $ "unhandled SQL table type " ++ show x
+
+        where
+        (unpackedTableName, transformerName, columns) = commonTableProps x
+        getName         = "get" ++ capitalize unpackedTableName
+        selectColumns   = intercalate ", "
+                              $ map
+                                    (escapeSQLiteName . unpack . name)
+                                    columns
+        baseSQL         = "SELECT " ++ selectColumns ++
+                              " FROM " ++
+                              escapeSQLiteName unpackedTableName
+        orderSQL        =
+            let pkColumns = filter ((==1) . pk) columns
+            in " ORDER BY " ++
+                   (if Prelude.null pkColumns
+                    then "rowid"
+                    else intercalate ", "
+                             $ map (escapeSQLiteName . unpack . name) pkColumns)
+
+        generateTableQueries [] =
+            do query <- query
+               pure [query]
+
+            where
+            sql     = baseSQL ++ orderSQL ++ limitSQL
+            query   =
+                do let (_, limitName, connName) = commonQueryNames
+                   funD
+                       (mkName getName)
+                       [clause
+                            [ varP limitName
+                            , varP connName
+                            ]
+                            (normalB [e| databaseQuery
+                                             $(stringE sql)
+                                             $(varE connName)
+                                             [SQLInteger $ fromInteger
+                                                  $(varE limitName)]
+                                             $(varE transformerName) |])
+                            []]
+
+        generateTableQueries (x:xs) =
+            do query    <- query
+               rest     <- generateTableQueries xs
+               return $ query : rest
+
+            where
+            query   =
+                funD
+                    (mkName $ getName ++
+                        "By" ++ capitalize columnName)
+                    [ clause
+                         [ [p| [] |]
+                         , wildP
+                         , wildP
+                         ]
+                         (normalB
+                             $ varE getEmpty)
+                         []
+                    , clause
+                         [ [p| [$(varP queryName)] |]
+                         , varP limitName
+                         , varP connName
+                         ]
+                         (normalB
+                              $ if notnull x == 1
+                                then equalsQuery
+                                else [e| case $(varE queryName) of
+                                             Just $(varP queryName) ->
+                                                  $(equalsQuery)
+                                             Nothing -> $(nullQuery) |])
+                         []
+                    , clause
+                         [ varP queryName
+                         , varP limitName
+                         , varP connName
+                         ]
+                         (normalB inQuery)
+                         []
+                    ]
+
+            nullQuery   =
+                [e| databaseQuery
+                        $(stringE $ baseSQL ++ whereSQL ++
+                              " IS NULL" ++ orderSQL ++ limitSQL)
+                        $(varE connName)
+                        [SQLInteger $ fromInteger
+                             $(varE limitName)]
+                        $(varE transformerName) |]
+
+            equalsQuery =
+                [e| databaseQuery
+                        $(stringE $ baseSQL ++ whereSQL ++
+                              " = ?" ++ orderSQL ++ limitSQL)
+                        $(varE connName)
+                        [ $(columnTypeTextOrInt
+                                [e| SQLText $ pack $(varE queryName) |]
+                                [e| SQLInteger $ fromInteger
+                                        $(varE queryName) |]
+                                x)
+                        , SQLInteger $ fromInteger
+                              $(varE limitName)
+                        ]
+                        $(varE transformerName) |]
+
+            inQuery     =
+                [e| databaseQuery
+                        ($(stringE $ baseSQL ++ whereSQL ++ " IN (") ++
+                             intercalate ", "
+                                 (replicate
+                                     (length $(varE queryName))
+                                     "?") ++
+                             $(stringE $ ")" ++ orderSQL ++ limitSQL))
+                        $(varE connName)
+                        (foldr
+                            (\ $(varP lName) r ->
+                                $(if notnull x == 1
+                                  then toTextOrInt
+                                  else [e| case $(varE lName) of
+                                               Just $(varP lName) ->
+                                                   $(toTextOrInt)
+                                               _ -> SQLNull |])
+                                : r)
+                            [SQLInteger $ fromInteger
+                              $(varE limitName)]
+                            $(varE queryName))
+                        $(varE transformerName) |]
+
+            toTextOrInt                         =
+                columnTypeTextOrInt
+                    [e| SQLText $ pack $(varE lName) |]
+                    [e| SQLInteger $ fromInteger $(varE lName) |]
+                    x
+            lName                               = mkName "l"
+            columnName                          = unpack $ name x
+            whereSQL                            =
+                " WHERE " ++ escapeSQLiteName columnName
+            (queryName, limitName, connName)    = commonQueryNames
+
+        generateFullTextQueries []      = pure []
+        generateFullTextQueries (x:xs)  =
+            if columnName == "rowid"
+            then generateFullTextQueries xs
+            else do query    <- funD
+                                    (mkName $ getName ++
+                                        "By" ++ capitalize columnName)
+                                    [query]
+                    rest     <- generateFullTextQueries xs
+                    return $ query : rest
+
+            where
+            columnName  = unpack $ name x
+            query       =
+                do let (queryName, limitName, connName) = commonQueryNames
+                   clause
+                       [ varP queryName
+                       , varP limitName
+                       , varP connName
+                       ]
+                       (normalB [e| databaseQuery
+                                        $(stringE sql)
+                                        $(varE connName)
+                                        [ SQLText $ pack $ unwords
+                                              $ map
+                                                    (++"*")
+                                                    (words
+                                                        $(varE queryName))
+                                        , SQLInteger $ fromInteger
+                                              $(varE limitName)]
+                                        $(varE transformerName) |])
+                       []
+            sql         =
+                baseSQL ++ " WHERE " ++
+                escapeSQLiteName columnName ++
+                " MATCH ? ORDER BY rank" ++ limitSQL
+
+    limitSQL                = " LIMIT ?"
+    lowerCaseColumn         = lowercase . unpack . name
+    makeColumnName          = mkName . lowerCaseColumn
+    getEmpty                = mkName "getEmpty"
+    commonQueryNames        = (mkName "query", mkName "limit", mkName "conn")
+    commonTableProps table  = (unpackedTableName, transformerName, columns)
+
+        where
+        unpackedTableName   = unpack $ tableName table
+        transformerName     = mkName $ lowercase unpackedTableName ++ "Transformer"
+        columns             = tableColumns table
+
+    columnTypeTextOrInt onText onInteger column =
+        case columnType of
+            Just txt    -> case unpack txt of
+                           ""           -> onText
+                           "TEXT"       -> onText
+                           "INTEGER"    -> onInteger
+                           _            -> unhandledColumnType
+            _           -> onText
+
+        where
+        columnType = type' column
+        unhandledColumnType = throw $ toException
+                                  $ UnhandledSchemaException
+                                  $ "unhandled SQL column type " ++
+                                        unpack (fromJust columnType)
 
     capitalize []               = []
-    capitalize (x:xs)           = toUpper x : xs
+    capitalize (x:xs)           = toUpper x : upperCaseWords xs
 
     lowercase []                = []
-    lowercase (x:xs)            = toLower x : xs
+    lowercase (x:xs)            = toLower x : upperCaseWords xs
 
-    crudFields tableName []     = []
-    crudFields tableName (x:xs) =
-        ( mkName (lowercase tableName ++ "_" ++ unpack (name x))
-        , Bang NoSourceUnpackedness NoSourceStrictness
-        , columnType (unpack <$> type' x) $ notnull x
-        )
-        : crudFields tableName xs
+    upperCaseWords []           = []
+    upperCaseWords ('_':x:xs)   = toUpper x : upperCaseWords xs
+    upperCaseWords (x:xs)       = x : upperCaseWords xs
 
-    columnType sqlType
-        | isNothing sqlType         = makeType "String"
-        | sqlType == Just "TEXT"    = makeType "String"
-        | sqlType == Just ""        = makeType "String"
-        | sqlType == Just "INTEGER" = makeType "Int"
-        | otherwise                 = throw $ toException
-                                          $ UnhandledSchemaException
-                                          $ "unhandled SQL column type "
-                                                ++ show sqlType
-    makeType haskellType notnull =
-        if notnull == 1
-        then ConT $ mkName haskellType
-        else AppT (makeType "Maybe" 1) (makeType haskellType 1)
+    escapeSQLiteName name       = '"' : escapeSQLiteNameImpl name
+
+        where
+        escapeSQLiteNameImpl []     = "\""
+        escapeSQLiteNameImpl (x:xs) = (if x == '"'
+                                       then ('"':) . ('"':)
+                                       else (x:))
+                                       $ escapeSQLiteNameImpl xs
 ```
 
 
 
-CrudGenerator/src/CrudGenerator.hs :
+CrudGenerator/Example.hs :
 
 ```haskell
-{-# LANGUAGE TemplateHaskell #-}
-module CrudGenerator where
+{-|
+    CrudGenerator Example usage
 
-import CrudTemplates
+    Prerequisites: build an IMDB.db or change "IMDB.db" in this file to point
+                   to another SQLite database
+
+    To build IMDB.db prerequisite, change directory to Week5 folder, and run
+    (without apostrophes):
+        'cabal build InitializeDatabase'
+    Then, change directory to CrudGenerator folder, and run:
+        'cabal run InitializeDatabase'
+
+    To test Template Haskell CRUD exports, start GHCI with:
+        'stack exec -- ghci -XTemplateHaskell'
+    Then ':cd' to the current directory, and run two commands:
+        ':load src/CrudGenerator Example'
+        ':module Control.Monad.Except DatabaseHelpers CrudGenerator Example'
+
+    Select first 100 rows with Haskell (still in GHCI):
+        runExceptT $ (getTitles 100) `withDatabase` "IMDB.db"
+
+    -David Bruck
+-}
+{-# LANGUAGE TemplateHaskell #-}
+module Example where
+
+import CrudGenerator
     ( generateCrud
     )
 
@@ -516,45 +966,237 @@ $(generateCrud "IMDB.db")
 
 
 
-The code in its current state will query up to 2 records, but the hardcoded FullText Search `MATCH 'title fake*'` only matches exactly 1 record, but if you put another asterisk (`*`) after `title` like `'title* fake*`' it will match the other record too.
+**Parse IMDB's Database of Titles Into SQLite**
 
-Work in progress, which will be removed later; CrudGenerator/app/Main.hs :
+**Prerequisite:** in order to use CrudGenerator for Template Haskell, the database must already exist with the expected Schema; therefore, I created a Cabal custom build which also runs InitializeDatabase for the current directory to create IMDB.db in the expected format if it does not already exist.
+
+PopulateDatabase/Setup.hs :
 
 ```haskell
-module Main where
-
-import CrudGenerator
+import Distribution.Simple
+    ( defaultMainWithHooks
+    , simpleUserHooks
+    , UserHooks(..)
+    )
 import DatabaseHelpers
-import Database.SQLite3
-import Data.Either
+    ( withDatabase
+    , databaseQuery
+    )
+import System.Process
+    ( createProcess
+    , waitForProcess
+    , proc
+    , StdStream(..)
+    , CreateProcess(..)
+    )
+import Control.Monad
+    ( when
+    )
 import Control.Monad.Except
-import Control.Exception
-import Data.Text
---import CrudTemplates
+    ( runExceptT
+    )
+import Control.Error.Util
+    ( syncIO
+    )
+import System.IO
+    ( stdout
+    , stderr
+    , hFlush
+    , hClose
+    , hSeek
+    , hGetContents
+    , hPutStrLn
+    , SeekMode(..)
+    )
+import System.Exit
+    ( ExitCode(..)
+    )
 
-main :: IO ()
-main = do --let a = generateCrud "IMDB.db"
-          limitOne <- runExceptT $ (`getTitlesSearch` 2) `withDatabase` "IMDB.db"
-          case limitOne of
-              Left err -> print err
-              Right ttls -> forM_ ttls printTitlesSearch
-          --print $ show (tconst, titleType, primaryTitle, originalTitle, startYear, endYear, runtimeMinutes, genres)
+main = defaultMainWithHooks buildHooked
+
     where
-    -- Titles tconst titleType primaryTitle originalTitle startYear endYear runtimeMinutes genres =
-    --     Titles 1 "titleType2" "primaryTitle3" "originalTitle4" 2005 (Just 2006) (Just 2007) (Just "genres8")
-    
-    --printTitles (Titles tconst titleType primaryTitle originalTitle startYear endYear runtimeMinutes genres) = putStrLn $ "tconst: " ++ show (tconst, titleType, primaryTitle, originalTitle, startYear, endYear, runtimeMinutes, genres)
-    printTitlesSearch (Titles_search primaryTitle rowid) = putStrLn $ "tconst: " ++ show (primaryTitle, rowid)
+    buildHooked = simpleUserHooks {buildHook = initializeDatabaseFirst}
 
-    --getTitles conn limit = databaseQuery "SELECT tconst, titleType, primaryTitle, originalTitle, startYear, endYear, runtimeMinutes, genres FROM titles ORDER BY tconst LIMIT ?" conn [SQLInteger (fromIntegral limit)] (\[SQLInteger tconst, SQLText titleType, SQLText primaryTitle, SQLText originalTitle, SQLInteger startYear, SQLNull, SQLNull, SQLNull] -> pure (Titles (fromIntegral tconst) (unpack titleType) (unpack primaryTitle) (unpack originalTitle) (fromIntegral startYear) Nothing Nothing Nothing))
-    getTitlesSearch conn limit = databaseQuery "SELECT primaryTitle, rowid FROM titles_search WHERE primaryTitle MATCH 'title fake*' ORDER BY rank LIMIT ?" conn [SQLInteger (fromIntegral limit)] (\[primaryTitle, SQLInteger rowid] -> pure (Titles_search (case primaryTitle of SQLNull -> Nothing; SQLText primaryTitle -> Just $ unpack primaryTitle) (fromIntegral rowid)))
-    --getTitles conn limit = databaseQuery "SELECT tconst, titleType, primaryTitle, originalTitle, startYear, endYear, runtimeMinutes, genres FROM titles ORDER BY tconst LIMIT ?" conn [SQLInteger (fromIntegral limit)] (\[SQLInteger tconst, SQLText titleType, SQLText primaryTitle, SQLText originalTitle, SQLInteger startYear, SQLNull, SQLNull, SQLNull] -> pure (Titles (fromIntegral tconst) (unpack titleType) (unpack primaryTitle) (unpack originalTitle) (fromIntegral startYear) Nothing Nothing Nothing))
+    initializeDatabaseFirst pdesc lbinfo uhooks bflags =
+        do result <- runExceptT $ initializeDatabase `withDatabase` "IMDB.db"
+           case result of
+               Left err -> error $ "Error: " ++ show err
+               Right _  -> buildHook simpleUserHooks pdesc lbinfo uhooks bflags
+
+        where
+        initializeDatabase conn =
+            do existing <- databaseQuery
+                               ( "SELECT 1\n" ++
+                                 "FROM sqlite_master"
+                               )
+                               conn
+                               []
+                               return
+               syncIO $ when (null existing) runInitialize
+
+        runInitialize =
+            do (_, hOut, hErr, process) <- createProcess
+                                               (proc
+                                                   "cabal"
+                                                   [ "v2-run"
+                                                   , "../InitializeDatabase"
+                                                   ])
+                                               { std_out = CreatePipe
+                                               , std_err = CreatePipe
+                                               }
+               exitCode <- waitForProcess process
+               out      <- getContents hOut "Out"
+               err      <- getContents hErr "Err"
+               case exitCode of
+                   ExitFailure code -> error $
+                                           "InitializeDatabase " ++
+                                           "failed with exit code " ++
+                                           show code ++ "\nOutput:\n" ++
+                                           out ++ err
+                   _                -> do putStrLn out
+                                          hFlush stdout
+                                          hPutStrLn stderr err
+                                          hFlush stderr
+
+        getContents h purpose =
+            case h of
+                Just h  -> hGetContents h
+                _       -> return $ "Error: " ++ purpose ++ " handle Nothing"
 ```
 
 
 
-The next step would be to be able to dynamically create at least 2 different types of queries, one for FullText search tables, and one for other tables. It would call `databaseQuery` and create a transformer to return results of the types we're already generating from TemplateHaskell (e.g. `Titles` and `Titles_search` for the current 2 tables). Then, we could generate TemplateHaskell for database inserts as well.
+Work-in-progress, able to download and unzip IMDB database file "title.basics.tsv.gz", but decoding TSV is currently failing. Example console output:
 
-We would then use the database insert logic along with the IMDB titles data (freely available for download from [https://datasets.imdbws.com/](https://datasets.imdbws.com/)) which we would parse directly into the database.
+```shell
+Downloading https://datasets.imdbws.com/title.basics.tsv.gz ...
+Unzipping and decoding ...
+PopulateDatabase-exe: Error: DecodeException {decodeError = "parse error (Failed reading: conversion error: cannot unpack array of length 3 into a 3-tuple. Input record: [\"tt0033122\",\"movie\",\"Swing it\"]) at  magistern\t\"Swing it\" magistern\t0\t1940\t\\N\t92\tComedy,Music\ntt0033123\tshort\tSwinging the Lambeth Walk\t (truncated)"}
+CallStack (from HasCallStack):
+  error, called at app\Main.hs:85:27 in main:Main
+```
+
+I am guessing that the library chosen for decoding, Data.Csv (from cassava package), is seeing double quotes and assuming a quoted value, but the column has value `"Swing it" magistern` which is not a proper CSV-style quoting scheme (where the value is surrounded by quotes and literal quotes are doubled-up to escape them).
+
+PopulateDatabase/main.hs :
+
+```haskell
+{-# LANGUAGE DeriveGeneric #-}
+module Main where
+
+import DatabaseHelpers
+    ( withDatabase
+    )
+import Control.Monad.Except
+    ( runExceptT
+    , throwError
+    , ExceptT
+    )
+import Control.Exception
+    ( toException
+    , SomeException
+    , Exception
+    )
+import Control.Error.Util
+    ( syncIO
+    )
+import Network.HTTP.Simple
+    ( parseRequest
+    , httpBS
+    , getResponseBody
+    )
+import Codec.Compression.GZip
+    ( decompress
+    )
+import Data.Text
+    ( Text
+    )
+import Data.Text.Lazy.Encoding
+    ( decodeUtf8
+    )
+import Data.Csv
+    ( decodeWith
+    , defaultDecodeOptions
+    , DecodeOptions(..)
+    , Header
+    , FromRecord
+    , HasHeader(..)
+    )
+import Data.Either
+    ( either
+    )
+import Data.Char
+    ( ord
+    )
+import Data.Vector
+    ( head
+    , Vector
+    )
+import Data.ByteString.Lazy
+    ( fromStrict
+    )
+import Data.Function
+    ( (&)
+    )
+import GHC.Generics
+    ( Generic
+    )
+
+newtype DecodeException = DecodeException
+    { decodeError :: String
+    } deriving (Show)
+
+instance Exception DecodeException
+
+data Title = Title
+    { tconst            :: !Text
+    , titleType         :: !Text
+    , primaryTitle      :: !Text
+    , originalTitle     :: !Text
+    , isAdult           :: !Text
+    , startYear         :: !Text
+    , endYear           :: !Text
+    , runtimeMinutes    :: !Text
+    , genres            :: !Text
+    }
+    deriving (Generic, Show)
+
+instance FromRecord Title
+
+main = do result <- runExceptT $ initializeDatabase `withDatabase` "IMDB.db"
+          case result of
+              Left err -> Prelude.error $ "Error: " ++ show err
+              Right _  -> putStrLn "Success"
+
+    where
+    initializeDatabase conn =
+        do let titleBasicsURL = "https://datasets.imdbws.com/title.basics.tsv.gz"
+           syncIO $ putStrLn $
+               "Downloading " ++ titleBasicsURL ++ " ..."
+           downloaded       <- syncIO (parseRequest titleBasicsURL)
+                                   >>= syncIO . httpBS
+           syncIO $ putStrLn "Unzipping and decoding ..."
+           let decoded = getResponseBody downloaded
+                             & fromStrict
+                             & decompress
+           
+           vector <- either
+                         (throwError . toException . DecodeException)
+                         return
+                         (decodeWith
+                             defaultDecodeOptions
+                             { decDelimiter = fromIntegral (ord '\t')
+                             }
+                             NoHeader
+                             decoded
+                             :: Either String (Vector Title))
+
+           syncIO $ putStrLn "Adding records to database ..."
+           syncIO $ print $ Data.Vector.head vector
+```
+
+
+
+The next step would be to be able to continue working on CrudGenerator to add dynamic, typed SQL `INSERT` operations. Also, will resolve the TSV-decoding issue to finish the database population which will be easy once we have typed records and a typed database-insert method.
 
 Then, we still need to create an HTTP server to host searchable movie titles such as via instructions: [https://hackage.haskell.org/package/http-server](https://hackage.haskell.org/package/http-server)

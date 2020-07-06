@@ -2,8 +2,12 @@ module DatabaseHelpers
     ( getSchema
     , withDatabase
     , databaseQuery
+    , validMaybeText
+    , validMaybeInt
     , SchemaColumn(..)
     , SchemaTable(..)
+    , TableType(..)
+    , SQLStringException(..)
     ) where
 
 import Control.Exception
@@ -147,12 +151,11 @@ getSchema conn =
             | Just endingLength <- matchFullTextStorageEnding
                                        tableName
                                        fullTextStorageEndings
-            , True              <-
-                isFullTextTable
-                    $ take (length tableName - endingLength) tableName =
-                        FullTextStorage
-            | True              <- isFullTextTable tableName    = FullText
-            | otherwise                                         = Table
+            , isFullTextTable
+                  $ take (length tableName - endingLength) tableName =
+                      FullTextStorage
+            | isFullTextTable tableName = FullText
+            | otherwise                 = Table
         isFullTextTable tableName =
             all
                 (\ending -> Data.HashSet.member
@@ -185,7 +188,7 @@ getSchema conn =
 
     nameTransformer [SQLText name]  = return name
     nameTransformer _                   =
-        throwIO $ SQLStringException "expecting just SQLText column"
+        throwIO $ SQLStringException "expecting schema columns (Text NOT NULL)"
 
     schemaTransformer
         [ SQLInteger cid
@@ -205,15 +208,23 @@ getSchema conn =
                          (maybeText dflt_value)
                          pk
         where
-        validMaybeText maybeText
-            | SQLNull   <- maybeText    = True
-            | SQLText _ <- maybeText    = True
-            | otherwise                 = False
         maybeText SQLNull               = Nothing
         maybeText (SQLText value)       = Just value
     schemaTransformer _ =
         throwIO $ SQLStringException
-            "expecting schema columns (Int, Text, Text, Int, Text NULL, Int)"
+            ( "expecting schema columns (Int NOT NULL, Text NOT NULL, " ++
+              "Text NULL, Int NOT NULL, Text NULL, Int NOT NULL)"
+            )
+
+validMaybeText maybeText
+    | SQLNull   <- maybeText    = True
+    | SQLText _ <- maybeText    = True
+    | otherwise                 = False
+
+validMaybeInt maybeInt
+    | SQLNull       <- maybeInt = True
+    | SQLInteger _  <- maybeInt = True
+    | otherwise                 = False
 
 withDatabase :: (Database.SQLite3.Direct.Database ->
                     ExceptT SomeException IO a) ->

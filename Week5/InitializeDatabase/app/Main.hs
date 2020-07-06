@@ -25,7 +25,7 @@ instance Exception InitializationException
 main :: IO ()
 main = do result <- runExceptT $ initializeDatabase `withDatabase` "IMDB.db"
           case result of
-              Left err -> print $ "Error: " ++ show err
+              Left err -> Prelude.error $ "Error: " ++ show err
               Right _  -> putStrLn "Success"
     where
     initializeDatabase conn =

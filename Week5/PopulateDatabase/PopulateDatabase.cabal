@@ -1,62 +1,37 @@
 cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.33.0.
---
--- see: https://github.com/sol/hpack
---
--- hash: f926b56bc0d6549fe0a711f7882d0915b7d6737bbc7bd76d97adc82376a79928
-
 name:           PopulateDatabase
 version:        0.1.0.0
-description:    Please see the README on GitHub at <https://github.com/githubuser/PopulateDatabase#readme>
-homepage:       https://github.com/githubuser/PopulateDatabase#readme
-bug-reports:    https://github.com/githubuser/PopulateDatabase/issues
-author:         Author name here
-maintainer:     example@example.com
-copyright:      2020 Author name here
-license:        BSD3
-license-file:   LICENSE
-build-type:     Simple
-extra-source-files:
-    README.md
-    ChangeLog.md
+author:         David Bruck
+build-type:     Custom
 
-source-repository head
-  type: git
-  location: https://github.com/githubuser/PopulateDatabase
-
-library
-  exposed-modules:
-      Lib
-  other-modules:
-      Paths_PopulateDatabase
-  hs-source-dirs:
-      src
-  build-depends:
-      base >=4.7 && <5
-  default-language: Haskell2010
+custom-setup
+  setup-depends:
+      Cabal ==3.2.0.0
+    , DatabaseHelpers ==0.1.0.0
+    , process
+    , base
+    , mtl
+    , errors
 
 executable PopulateDatabase-exe
   main-is: Main.hs
+  default-extensions: DeriveGeneric
   other-modules:
       Paths_PopulateDatabase
   hs-source-dirs:
       app
   ghc-options: -threaded -rtsopts -with-rtsopts=-N
   build-depends:
-      PopulateDatabase
+      DatabaseHelpers ==0.1.0.0
+    , CrudGenerator ==0.1.0.0
     , base >=4.7 && <5
-  default-language: Haskell2010
-
-test-suite PopulateDatabase-test
-  type: exitcode-stdio-1.0
-  main-is: Spec.hs
-  other-modules:
-      Paths_PopulateDatabase
-  hs-source-dirs:
-      test
-  ghc-options: -threaded -rtsopts -with-rtsopts=-N
-  build-depends:
-      PopulateDatabase
-    , base >=4.7 && <5
+    , mtl
+    , bytestring
+    , http-conduit ==2.3.7.3
+    , zlib
+    , text
+    , errors
+    , cassava
+    , vector
   default-language: Haskell2010
