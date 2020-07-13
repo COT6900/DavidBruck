@@ -40,7 +40,7 @@ main = do result <- runExceptT $ initializeDatabase `withDatabase` "IMDB.db"
                          "titleType TEXT NOT NULL,\n" ++
                          "primaryTitle TEXT NOT NULL,\n" ++
                          "originalTitle TEXT NOT NULL,\n" ++
-                         "startYear INTEGER NOT NULL,\n" ++
+                         "startYear INTEGER NULL,\n" ++
                          "endYear INTEGER NULL,\n" ++
                          "runtimeMinutes INTEGER NULL,\n" ++
                          "genres TEXT\n" ++

@@ -1,4 +1,4 @@
-### David Bruck COT6900 - Week 5, 6
+### David Bruck COT6900 - Week 5, 6, 7
 
 ### Database helpers for SQLite
 
@@ -323,7 +323,87 @@ INSERT INTO titles_search (rowid, primaryTitle) SELECT tconst, primaryTitle FROM
 
 
 
-InitializeDatabase/app/Main.hs :
+Also, created library function used by Setup.hs in both PopulateDatabase and MovieSearchSite projects in order to help ensure InitializeDatabase is run at least once before CrudGenerator can be used to use the database schema to run TemplateHaskell and build CRUD operations.
+
+InitializeDatabase/src/InitializeDatabase.hs
+
+```haskell
+module InitializeDatabase
+    ( initializeDatabase
+    ) where
+
+import DatabaseHelpers
+    ( databaseQuery
+    )
+import System.Process
+    ( createProcess
+    , waitForProcess
+    , proc
+    , StdStream(..)
+    , CreateProcess(..)
+    )
+import Control.Monad
+    ( when
+    )
+import Control.Error.Util
+    ( syncIO
+    )
+import System.IO
+    ( stdout
+    , stderr
+    , hFlush
+    , hGetContents
+    , hPutStrLn
+    )
+import System.Exit
+    ( ExitCode(..)
+    )
+
+initializeDatabase conn =
+    do existing <- databaseQuery
+                       ( "SELECT 1\n" ++
+                         "FROM sqlite_master"
+                       )
+                       conn
+                       []
+                       return
+       syncIO $ when (null existing) runInitialize
+
+    where
+    runInitialize =
+        do (_, hOut, hErr, process) <- createProcess
+                                           (proc
+                                               "cabal"
+                                               [ "v2-run"
+                                               , "../InitializeDatabase"
+                                               ])
+                                           { std_out = CreatePipe
+                                           , std_err = CreatePipe
+                                           }
+           exitCode <- waitForProcess process
+           out      <- getContents hOut "Out"
+           err      <- getContents hErr "Err"
+           case exitCode of
+               ExitFailure code -> error $
+                                       "InitializeDatabase " ++
+                                       "failed with exit code " ++
+                                       show code ++ "\nOutput:\n" ++
+                                       out ++ err
+               _                -> do putStrLn out
+                                      hFlush stdout
+                                      hPutStrLn stderr err
+                                      hFlush stderr
+
+        where
+        getContents h purpose =
+            case h of
+                Just h  -> hGetContents h
+                _       -> return $ "Error: " ++ purpose ++ " handle Nothing"
+```
+
+
+
+The executable itself, InitializeDatabase/app/Main.hs :
 
 ```haskell
 module Main where
@@ -368,7 +448,7 @@ main = do result <- runExceptT $ initializeDatabase `withDatabase` "IMDB.db"
                          "titleType TEXT NOT NULL,\n" ++
                          "primaryTitle TEXT NOT NULL,\n" ++
                          "originalTitle TEXT NOT NULL,\n" ++
-                         "startYear INTEGER NOT NULL,\n" ++
+                         "startYear INTEGER NULL,\n" ++
                          "endYear INTEGER NULL,\n" ++
                          "runtimeMinutes INTEGER NULL,\n" ++
                          "genres TEXT\n" ++
@@ -395,6 +475,7 @@ Template Haskell `$(generateCrud "<<path_to_SQLite_db_file>>")` will generate da
 Generated types:
 
 * Datatypes `<<TableName>>` with fields `<<tableName>>_<<columnName>>` for each column. A special additional column is created for `rowid` only for FullText type tables.
+* For both normal and FullText tables, added inserts `insert<<TableName>>` taking a record as the table's generated datatype to insert into the database.
 * For normal tables, queries `get<<TableName>>` taking a `limit` parameter for the number of records to return, in the order of the primary key ascending.
 * Also for normal tables, queries `get<<TableName>>By<<ColumnName>>` taking an array of values (`query` parameter) to find in a single column as well as the same `limit` parameter.
   * If the query is empty, no records are returned.
@@ -478,6 +559,7 @@ import Language.Haskell.TH
     , normalB
     , guardedB
     , listP
+    , listE
     , appE
     , patGE
     , noBindS
@@ -509,7 +591,8 @@ generateCrud filePath = runIO getDatabaseSchema >>= crudFromSchema
         do dataTypes        <- generateDataTypes tables
            transformers     <- generateTransformers tables
            queries          <- generateQueries tables
-           return $ dataTypes ++ transformers ++ queries
+           inserts          <- generateInserts tables
+           return $ dataTypes ++ transformers ++ queries ++ inserts
 
     generateDataTypes []        = pure []
     generateDataTypes (x:xs)    =
@@ -526,14 +609,14 @@ generateCrud filePath = runIO getDatabaseSchema >>= crudFromSchema
            return (dataType : rest)
 
         where
-        unpackedTableName = unpack $ tableName x
-        capitalizedName = mkName $ capitalize unpackedTableName
-        lowecasedName = lowercase unpackedTableName
+        unpackedTableName   = unpack $ tableName x
+        capitalizedName     = mkName $ capitalize unpackedTableName
+        lowercasedName      = lowercase unpackedTableName
 
         crudFields []     = pure []
         crudFields (x:xs) =
             do field <- varBangType
-                            (mkName (lowecasedName ++ "_" ++ unpack (name x)))
+                            (mkName (lowercasedName ++ "_" ++ unpack (name x)))
                             (bangType
                                 (bang
                                     (pure NoSourceUnpackedness)
@@ -692,16 +775,15 @@ generateCrud filePath = runIO getDatabaseSchema >>= crudFromSchema
            return [emptySig, getEmpty]
 
     generateQueries (x:xs)  =
-        case tableType x of
-            Table       -> do tableQueries  <- generateTableQueries columns
-                              rest          <- generateQueries xs
-                              return $ tableQueries ++ rest
-            FullText    -> do fullText      <- generateFullTextQueries columns
-                              rest          <- generateQueries xs
-                              return $ fullText ++ rest
-            _           -> throw $ toException
-                               $ UnhandledSchemaException
-                               $ "unhandled SQL table type " ++ show x
+        do queries  <- case tableType x of
+                           Table       -> generateTableQueries columns
+                           FullText    -> generateFullTextQueries columns
+                           _           -> throw $ toException
+                                              $ UnhandledSchemaException
+                                              $ "unhandled SQL table type "
+                                                    ++ show x
+           rest     <- generateQueries xs
+           return $ queries ++ rest
 
         where
         (unpackedTableName, transformerName, columns) = commonTableProps x
@@ -878,6 +960,66 @@ generateCrud filePath = runIO getDatabaseSchema >>= crudFromSchema
                 escapeSQLiteName columnName ++
                 " MATCH ? ORDER BY rank" ++ limitSQL
 
+    generateInserts []      = pure []
+    generateInserts (x:xs)  =
+        do insert   <- generateInsert
+           rest     <- generateInserts xs
+           return $ insert : rest
+
+        where
+        (unpackedTableName, _, columns) = commonTableProps x
+        lowercasedName  = lowercase unpackedTableName
+        insertName      = "insert" ++ capitalize unpackedTableName
+        insertColumns   = intercalate ", "
+                              $ map
+                                    (escapeSQLiteName . unpack . name)
+                                    columns
+        insertSQL       = "INSERT INTO " ++
+                              escapeSQLiteName unpackedTableName ++
+                              " (" ++ insertColumns ++ ") VALUES (" ++
+                              intercalate ", " (replicate
+                                                   (length columns)
+                                                   "?") ++
+                              ")"
+        param column    =
+            do let columnName       = unpack (name column)
+               let lowercasedColumn = mkName $ lowercase columnName
+               let valueName        = mkName $ lowercasedName ++ "_" ++
+                                          columnName
+               let getColumn        = [e| $(varE valueName)
+                                              $(varE $ mkName lowercasedName) |]
+               columnTypeTextOrInt
+                   (case notnull column of
+                        1  -> [e| SQLText $ pack $(getColumn) |]
+                        _  -> [e| case $(getColumn) of
+                                      Just $(varP lowercasedColumn) ->
+                                          SQLText $ pack $(varE lowercasedColumn)
+                                      Nothing -> SQLNull |])
+                   (case notnull column of
+                        1  -> [e| SQLInteger $ fromIntegral $(getColumn) |]
+                        _  -> [e| case $(getColumn) of
+                                      Just $(varP lowercasedColumn) ->
+                                          SQLInteger $ fromIntegral
+                                              $(varE lowercasedColumn)
+                                      Nothing -> SQLNull |])
+                   column
+
+        generateInsert =
+            do let (_, _, connName) = commonQueryNames
+               let paramNames       = map makeColumnName columns
+               funD
+                   (mkName insertName)
+                   [clause
+                        [ varP $ mkName lowercasedName
+                        , varP connName
+                        ]
+                        (normalB [e| databaseQuery
+                                         $(stringE insertSQL)
+                                         $(varE connName)
+                                         $(listE $ map param columns)
+                                         (\_ -> pure ()) |])
+                        []]
+
     limitSQL                = " LIMIT ?"
     lowerCaseColumn         = lowercase . unpack . name
     makeColumnName          = mkName . lowerCaseColumn
@@ -900,7 +1042,7 @@ generateCrud filePath = runIO getDatabaseSchema >>= crudFromSchema
             _           -> onText
 
         where
-        columnType = type' column
+        columnType          = type' column
         unhandledColumnType = throw $ toException
                                   $ UnhandledSchemaException
                                   $ "unhandled SQL column type " ++
@@ -952,6 +1094,11 @@ CrudGenerator/Example.hs :
     Select first 100 rows with Haskell (still in GHCI):
         runExceptT $ (getTitles 100) `withDatabase` "IMDB.db"
 
+    To see the fields and their types inside of a table's data type,
+    just change Titles to the desired table's Pascal-Cased name:
+        putStrLn $(stringE . pprint =<< reify ''Titles)
+        putStrLn $(stringE . pprint =<< reify ''TitlesSearch)
+
     -David Bruck
 -}
 {-# LANGUAGE TemplateHaskell #-}
@@ -966,7 +1113,7 @@ $(generateCrud "IMDB.db")
 
 
 
-**Parse IMDB's Database of Titles Into SQLite**
+### Parse IMDB's Database of Titles Into SQLite
 
 **Prerequisite:** in order to use CrudGenerator for Template Haskell, the database must already exist with the expected Schema; therefore, I created a Cabal custom build which also runs InitializeDatabase for the current directory to create IMDB.db in the expected format if it does not already exist.
 
@@ -980,36 +1127,12 @@ import Distribution.Simple
     )
 import DatabaseHelpers
     ( withDatabase
-    , databaseQuery
     )
-import System.Process
-    ( createProcess
-    , waitForProcess
-    , proc
-    , StdStream(..)
-    , CreateProcess(..)
-    )
-import Control.Monad
-    ( when
+import InitializeDatabase
+    ( initializeDatabase
     )
 import Control.Monad.Except
     ( runExceptT
-    )
-import Control.Error.Util
-    ( syncIO
-    )
-import System.IO
-    ( stdout
-    , stderr
-    , hFlush
-    , hClose
-    , hSeek
-    , hGetContents
-    , hPutStrLn
-    , SeekMode(..)
-    )
-import System.Exit
-    ( ExitCode(..)
     )
 
 main = defaultMainWithHooks buildHooked
@@ -1022,51 +1145,11 @@ main = defaultMainWithHooks buildHooked
            case result of
                Left err -> error $ "Error: " ++ show err
                Right _  -> buildHook simpleUserHooks pdesc lbinfo uhooks bflags
-
-        where
-        initializeDatabase conn =
-            do existing <- databaseQuery
-                               ( "SELECT 1\n" ++
-                                 "FROM sqlite_master"
-                               )
-                               conn
-                               []
-                               return
-               syncIO $ when (null existing) runInitialize
-
-        runInitialize =
-            do (_, hOut, hErr, process) <- createProcess
-                                               (proc
-                                                   "cabal"
-                                                   [ "v2-run"
-                                                   , "../InitializeDatabase"
-                                                   ])
-                                               { std_out = CreatePipe
-                                               , std_err = CreatePipe
-                                               }
-               exitCode <- waitForProcess process
-               out      <- getContents hOut "Out"
-               err      <- getContents hErr "Err"
-               case exitCode of
-                   ExitFailure code -> error $
-                                           "InitializeDatabase " ++
-                                           "failed with exit code " ++
-                                           show code ++ "\nOutput:\n" ++
-                                           out ++ err
-                   _                -> do putStrLn out
-                                          hFlush stdout
-                                          hPutStrLn stderr err
-                                          hFlush stderr
-
-        getContents h purpose =
-            case h of
-                Just h  -> hGetContents h
-                _       -> return $ "Error: " ++ purpose ++ " handle Nothing"
 ```
 
 
 
-Work-in-progress, able to download and unzip IMDB database file "title.basics.tsv.gz", but decoding TSV is currently failing. Example console output:
+PopulateDatabase-exe is able to download and unzip IMDB database file "title.basics.tsv.gz", but decoding tab-separated values, or TSV, with cassava is difficult because there are no decode options to prevent it from recognizing a double quote (`"`) character as an escaped field. Example console output:
 
 ```shell
 Downloading https://datasets.imdbws.com/title.basics.tsv.gz ...
@@ -1076,16 +1159,24 @@ CallStack (from HasCallStack):
   error, called at app\Main.hs:85:27 in main:Main
 ```
 
-I am guessing that the library chosen for decoding, Data.Csv (from cassava package), is seeing double quotes and assuming a quoted value, but the column has value `"Swing it" magistern` which is not a proper CSV-style quoting scheme (where the value is surrounded by quotes and literal quotes are doubled-up to escape them).
 
-PopulateDatabase/main.hs :
+
+To workaround the issue parsing as a TSV, we created a routine `tsvToCsv` which works on chunks of "Lazy Bytestring" to create parseable comma-separated values, or CSV. Also, to prevent memory from growing, we immediately save the CSV to disk, before opening it for read again to parse into records.
+
+PopulateDatabase/app/Main.hs :
 
 ```haskell
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE TemplateHaskell #-}
 module Main where
 
 import DatabaseHelpers
     ( withDatabase
+    , databaseQuery
+    , SQLStringException(..)
+    )
+import Control.Monad
+    ( when
     )
 import Control.Monad.Except
     ( runExceptT
@@ -1108,19 +1199,13 @@ import Network.HTTP.Simple
 import Codec.Compression.GZip
     ( decompress
     )
-import Data.Text
-    ( Text
-    )
 import Data.Text.Lazy.Encoding
     ( decodeUtf8
     )
 import Data.Csv
-    ( decodeWith
-    , defaultDecodeOptions
-    , DecodeOptions(..)
+    ( decodeByName
     , Header
-    , FromRecord
-    , HasHeader(..)
+    , FromNamedRecord
     )
 import Data.Either
     ( either
@@ -1130,17 +1215,46 @@ import Data.Char
     )
 import Data.Vector
     ( head
+    , forM_
     , Vector
+    )
+import Data.Text
+    ( unpack
+    , Text
+    )
+import Data.ByteString
+    ( pack
+    , unpack
+    , empty
+    , writeFile
+    , appendFile
     )
 import Data.ByteString.Lazy
     ( fromStrict
+    , toChunks
+    , fromChunks
+    , readFile
     )
 import Data.Function
     ( (&)
     )
+import System.Directory
+    ( doesFileExist
+    )
 import GHC.Generics
     ( Generic
     )
+import Data.Word
+    ( Word8(..)
+    )
+import CrudGenerator
+    ( generateCrud
+    )
+import Text.Read
+    ( readEither
+    )
+
+$(generateCrud "IMDB.db")
 
 newtype DecodeException = DecodeException
     { decodeError :: String
@@ -1149,19 +1263,19 @@ newtype DecodeException = DecodeException
 instance Exception DecodeException
 
 data Title = Title
-    { tconst            :: !Text
+    { tconst            :: !Text -- Combination: "tt" ++ readable Int
     , titleType         :: !Text
     , primaryTitle      :: !Text
     , originalTitle     :: !Text
-    , isAdult           :: !Text
-    , startYear         :: !Text
-    , endYear           :: !Text
-    , runtimeMinutes    :: !Text
-    , genres            :: !Text
+    , isAdult           :: !Int
+    , startYear         :: !Text -- Could be Int, but could be "\N"othing
+    , endYear           :: !Text -- Could be Int, but could be "\N"othing
+    , runtimeMinutes    :: !Text -- Could be Int, but could be "\N"othing
+    , genres            :: !Text -- Could be "\N"othing
     }
     deriving (Generic, Show)
 
-instance FromRecord Title
+instance FromNamedRecord Title
 
 main = do result <- runExceptT $ initializeDatabase `withDatabase` "IMDB.db"
           case result of
@@ -1170,33 +1284,651 @@ main = do result <- runExceptT $ initializeDatabase `withDatabase` "IMDB.db"
 
     where
     initializeDatabase conn =
-        do let titleBasicsURL = "https://datasets.imdbws.com/title.basics.tsv.gz"
-           syncIO $ putStrLn $
-               "Downloading " ++ titleBasicsURL ++ " ..."
-           downloaded       <- syncIO (parseRequest titleBasicsURL)
-                                   >>= syncIO . httpBS
-           syncIO $ putStrLn "Unzipping and decoding ..."
-           let decoded = getResponseBody downloaded
-                             & fromStrict
-                             & decompress
-           
+        do let titleBasicsURL   = "https://datasets.imdbws.com/title.basics.tsv.gz"
+           let convertedCsvPath = "title.basics.csv"
+
+           hasSchema    <- databaseQuery
+                               ( "SELECT 1\n" ++
+                                 "FROM sqlite_master"
+                               )
+                               conn
+                               []
+                               return
+           hasTitles    <-
+               if null hasSchema
+               then (throwError . toException . SQLStringException)
+                        "database lacks schema"
+               else databaseQuery
+                        ( "SELECT 1\n" ++
+                          "FROM titles"
+                        )
+                        conn
+                        []
+                        return
+
+           fileExists   <-
+               if null hasTitles
+               then syncIO $ doesFileExist convertedCsvPath
+               else (throwError . toException . SQLStringException)
+                        "database already has titles"
+
+           if fileExists
+           then syncIO $ putStrLn $ "Using existing " ++ convertedCsvPath
+           else do syncIO $ putStrLn $ "Downloading " ++ titleBasicsURL ++ " ..."
+                   downloaded   <- syncIO $ parseRequest titleBasicsURL >>= httpBS
+
+                   syncIO $ putStrLn "Unzipping, converting to csv, saving ..."
+                   syncIO $ putStrLn $ "Watch size of file for progress: " ++
+                                           convertedCsvPath
+                   syncIO $ putStrLn "Expected size: > 1/2 GB"
+                   syncIO $ writeCsv convertedCsvPath
+                                $ getResponseBody downloaded
+                                      & fromStrict
+                                      & decompress
+                                      & tsvToCsv
+                   syncIO $ putStrLn "Conversion to csv complete, continuing ..."
+
+           syncIO $ putStrLn "Parsing csv to records ..."
+           csv <- syncIO $ Data.ByteString.Lazy.readFile convertedCsvPath
+
            vector <- either
                          (throwError . toException . DecodeException)
-                         return
-                         (decodeWith
-                             defaultDecodeOptions
-                             { decDelimiter = fromIntegral (ord '\t')
-                             }
-                             NoHeader
-                             decoded
-                             :: Either String (Vector Title))
+                         (return . snd)
+                         (decodeByName csv
+                             :: Either String (Header, Vector Title))
 
            syncIO $ putStrLn "Adding records to database ..."
-           syncIO $ print $ Data.Vector.head vector
+           forM_ vector insertRecord
+
+        where
+        insertRecord title =
+            do parsedTConst     <- parseTConst $ Data.Text.unpack $ tconst title
+               parsedStartYear  <- parseTitleMaybe $ startYear title
+               parsedEndYear    <- parseTitleMaybe $ endYear title
+               parsedRunMinutes <- parseTitleMaybe $ runtimeMinutes title
+               parsedGenres     <- parseTitleMaybe $ genres title
+
+               let currentTitleType = Data.Text.unpack $ titleType title
+               let currentPrimTitle = Data.Text.unpack $ primaryTitle title
+               let currentOrigTitle = Data.Text.unpack $ originalTitle title
+               if isAdult title == 0 -- Don't want anything inappropriate
+               then do insertTitles
+                           Titles
+                           { titles_tconst              = parsedTConst
+                           , titles_titleType           = currentTitleType
+                           , titles_primaryTitle        = currentPrimTitle
+                           , titles_originalTitle       = currentOrigTitle
+                           , titles_startYear           = parsedStartYear
+                           , titles_endYear             = parsedEndYear
+                           , titles_runtimeMinutes      = parsedRunMinutes
+                           , titles_genres              = parsedGenres
+                           }
+                           conn
+                       insertTitlesSearch
+                           TitlesSearch
+                           { titlesSearch_primaryTitle  = Just currentPrimTitle
+                           , titlesSearch_rowid         = parsedTConst
+                           }
+                           conn
+               else pure [()]
+
+        parseTConst :: String -> ExceptT SomeException IO Int
+        parseTConst ('t':'t':tconst)    =
+            case readEither tconst of
+                Left err    -> throwError $ toException $ DecodeException
+                                   $ "when reading title tconst after " ++
+                                         "\"tt\": " ++ tconst ++ ", error: " ++
+                                         err
+                Right value -> return value
+        parseTConst tconst              =
+            throwError $ toException $ DecodeException
+                $ "expected title tconst to start with \"tt\": " ++
+                      if null tconst
+                      then "(null)"
+                      else tconst
+
+        parseTitleMaybe :: (Read a) => Text -> ExceptT SomeException IO (Maybe a)
+        parseTitleMaybe value =
+            let unparsed = Data.Text.unpack value
+            in if unparsed == "\\N"
+               then pure Nothing
+               else case readEither unparsed of
+                        Left err    -> throwError $ toException $ DecodeException
+                                           $ "error reading: " ++ err
+                        Right value -> return $ Just value
+
+        writeCsv = writeCsvImpl True
+
+            where
+            writeCsvImpl replaceFile path []        =
+                when replaceFile $ Data.ByteString.writeFile path empty
+            writeCsvImpl replaceFile path (x:xs)    =
+                do writeOrAppend path x
+                   writeCsvImpl False path xs
+                                                   
+                where
+                writeOrAppend = if replaceFile
+                                then Data.ByteString.writeFile
+                                else Data.ByteString.appendFile
+
+        tab, comma, doubleQuote, newline, cr :: Word8
+        tab         = fromIntegral (ord '\t')
+        comma       = fromIntegral (ord ',')
+        doubleQuote = fromIntegral (ord '"')
+        newline     = fromIntegral (ord '\n')
+        cr          = fromIntegral (ord '\r')
+
+        tsvToCsv = tsvToCsvImpl [] 0 [] . toChunks
+
+            where
+            chunkSize = 1024
+            tsvToCsvImpl rebuilt rebuiltLength carryOver chunks =
+                let (nextCarryOver, nextChunks, field, needsEscape, separator) =
+                        untilNextSeparator carryOver chunks
+                    quoted          = if needsEscape
+                                      then doubleQuote : quoteValue field
+                                      else field
+                    toAppend        = case separator of
+                                           Nothing          -> quoted
+                                           Just separator   ->
+                                               quoted ++
+                                                   if separator == tab
+                                                   then [comma]
+                                                   else [separator]
+                    toAppendLength  = length toAppend
+                    combinedLength  = rebuiltLength + toAppendLength
+                    isFilled        = combinedLength >= chunkSize
+                    (resultChunk, newRebuilt, newRebuiltLength) =
+                        if isFilled
+                        then let (lastEnd, newStart) =
+                                     splitAt
+                                         (chunkSize - rebuiltLength)
+                                         toAppend
+                             in ( Just $ rebuilt ++ lastEnd
+                                , newStart
+                                , combinedLength - chunkSize)
+                        else (Nothing, rebuilt ++ toAppend, combinedLength)
+                in case separator of
+                       Just separator   -> let next = tsvToCsvImpl
+                                                          newRebuilt
+                                                          newRebuiltLength
+                                                          nextCarryOver
+                                                          nextChunks
+                                           in case resultChunk of
+                                                  Nothing      -> next
+                                                  Just filled  ->
+                                                      pack filled : next
+                       Nothing          -> case resultChunk of
+                                               Nothing      -> [pack newRebuilt]
+                                               Just filled  ->
+                                                   pack filled : [pack newRebuilt]
+
+            untilNextSeparator []       []      = ([], [], [], False, Nothing)
+            untilNextSeparator []       (x:xs)  = untilNextSeparator
+                                                      (Data.ByteString.unpack x)
+                                                      xs
+            untilNextSeparator (x:xs)   chunks
+                -- Strip carriage returns
+                | x == cr                   = untilNextSeparator xs chunks
+                | x `elem` [newline, tab]   = (xs, chunks, [], False, Just x)
+                | otherwise =
+                    ( nextCarryOver
+                    , nextChunks
+                    , x : field
+                    , needsEscape || x `elem` [comma, doubleQuote]
+                    , separator
+                    )
+                    where
+                    ( nextCarryOver
+                        , nextChunks
+                        , field
+                        , needsEscape
+                        , separator) = untilNextSeparator xs chunks
+
+            quoteValue []           = [doubleQuote]
+            quoteValue (x:xs)
+                | x == doubleQuote  = doubleQuote : doubleQuote : quoteValue xs
+                | otherwise         = x : quoteValue xs
 ```
 
 
 
-The next step would be to be able to continue working on CrudGenerator to add dynamic, typed SQL `INSERT` operations. Also, will resolve the TSV-decoding issue to finish the database population which will be easy once we have typed records and a typed database-insert method.
+### Movie Search Site (HTTP Server hosting IMDB.db)
 
-Then, we still need to create an HTTP server to host searchable movie titles such as via instructions: [https://hackage.haskell.org/package/http-server](https://hackage.haskell.org/package/http-server)
+Work-in-progress, able to route HTTP "GET" requests. Relying on Haskell's own function pattern matching, any attempt to route which fails throws `PatternMatchFail` which we can catch and turn into an HTTP "Not Found" (404) response. Split into a hopefully near-final architecture, but still need to use CrudGenerator, read from the IMDB.db, and create the final HTML pages.
+
+
+
+**Prerequisite:** in order to use CrudGenerator for Template Haskell, the database must already exist with the expected Schema; therefore, I created a Cabal custom build which also runs InitializeDatabase for the current directory to create IMDB.db in the expected format if it does not already exist.
+
+MovieSearchSite/Setup.hs is identical to PopulateDatabase/Setup.hs from earlier.
+
+
+
+The executable itself which starts the server and chooses what router, controller, errorController, and base response (headers and outer HTML that wraps the body).
+
+**Note:** be careful, when the server is running, it appears to capture standard input somehow. It does not respond to Ctrl+C to kill the executable so you will have to kill the process via another mechanism.
+
+MovieSearchSite/app/Main.hs :
+
+```haskell
+{-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE LambdaCase #-}
+module Main where
+
+import MovieSearchSite.Controller
+    ( controller
+    )
+import MovieSearchSite.ErrorController
+    ( errorController
+    )
+import MovieSearchSite.Router
+    ( router
+    , renderRoute
+    )
+import Network.HTTP.Server
+    ( serverWith
+    , defaultConfig
+    , Config(..)
+    , Response(..)
+    , StatusCode(..)
+    )
+import Network.HTTP.Server.Response
+    ( reason
+    , statusCodeTriplet
+    )
+import Network.HTTP.Server.Logger
+    ( stdLogger
+    )
+import Network.HTTP.Headers
+    ( Header(..)
+    , HeaderName(..)
+    )
+import Control.Monad.Except
+    ( runExceptT
+    )
+import Data.ByteString.Lazy
+    ( length
+    )
+import Data.Time.Clock
+    ( getCurrentTime
+    )
+import Data.Time.Format
+    ( formatTime
+    , defaultTimeLocale
+    )
+import Text.Hamlet
+    ( hamlet
+    )
+import Text.Blaze.Html.Renderer.Utf8
+    ( renderHtml
+    )
+
+main = serverWith
+           defaultConfig
+           { srvLog     = stdLogger
+           , srvPort    = 8888
+           }
+           handler
+
+    where
+    handler _ url request =
+        do result <- runExceptT (controller router url request) >>=
+                         \case
+                             Right (page, body) -> pure (OK, page, body)
+                             Left err           -> return $ errorController err
+           html result <$> getCurrentTime
+
+        where
+        html (code, page, body) now =
+            Response
+            { rspCode    = statusCodeTriplet code
+            , rspReason  = reason code
+            , rspHeaders = makeHeaders
+            , rspBody    = resp
+            }
+
+            where
+            resp =
+                renderHtml $ [hamlet|
+                        $doctype 5
+                            <html>
+                                <head>
+                                    <title>Movie Search Site - #{page}
+                                    <link rel="icon" href="data:,">
+                                <body>
+                                    ^{body}
+                    |]
+                    renderRoute
+
+            makeHeaders =
+                [ Header HdrDate rfc1123Date
+                , Header HdrExpires "-1"
+                , Header HdrCacheControl "no-store"
+                , Header HdrContentType "text/html; charset=utf-8"
+                , Header HdrServer "COT6900 DavidBruck MovieSearchSite"
+                , Header HdrContentLength $ show $
+                      Data.ByteString.Lazy.length resp
+                ]
+
+                where
+                rfc1123Date =
+                    formatTime defaultTimeLocale "%a, %_d %b %Y %H:%M:%S GMT" now
+```
+
+
+
+First of multiple Library modules, `MovieSearchSite.Controller` checks for a valid HTTP method (it only accepts HTTP GET but not POST) as well as handles invalid paths with 404. Otherwise, calls the router to serve the route-specific content.
+
+src/MovieSearchSite/Controller.hs :
+
+```haskell
+module MovieSearchSite.Controller
+    ( controller
+    ) where
+
+import MovieSearchSite.Router
+    ( MovieRoute
+    )
+import MovieSearchSite.Exceptions
+    ( MethodNotAllowedException(..)
+    , NotFoundException(..)
+    )
+import Control.Monad.Except
+    ( when
+    , runExceptT
+    , throwError
+    , ExceptT
+    )
+import Network.HTTP.Server
+    ( Request(..)
+    , RequestMethod(..)
+    )
+import Network.URL
+    ( URL(..)
+    , URLType(..)
+    , exportParams
+    )
+import Control.Exception
+    ( toException
+    , fromException
+    , SomeException
+    , PatternMatchFail(..)
+    )
+import Control.Monad.Catch
+    ( catchIf
+    )
+import Control.Error.Util
+    ( syncIO
+    )
+import Data.ByteString.Lazy
+    ( ByteString
+    )
+import Text.Hamlet
+    ( HtmlUrl
+    )
+
+controller :: (String -> [(String, String)] -> ExceptT SomeException IO (String, HtmlUrl MovieRoute)) -> URL -> Request ByteString ->
+    ExceptT SomeException IO (String, HtmlUrl MovieRoute)
+controller router url request =
+    do let method   = rqMethod request
+       let path     = url_path url
+       when (method /= GET) $ throwError $ toException
+           $ MethodNotAllowedException method
+       catchIf
+           isNotFound
+           (router path params)
+           catchNotFound
+
+    where
+    isNotFound ex
+        | Just (PatternMatchFail _) <- fromException ex = True
+        | otherwise                                     = False
+
+    catchNotFound :: SomeException ->
+                         ExceptT SomeException IO (String, HtmlUrl MovieRoute)
+    catchNotFound _     = throwError $ toException $ NotFoundException
+                              $ exportPath params
+    method              = rqMethod request
+    path                = url_path url
+    params              = url_params url
+    exportPath []       = path
+    exportPath params   = path ++ ('?' : exportParams params)
+```
+
+
+
+A fallback "error" controller, src/MovieSearchSite/ErrorController.hs :
+
+```haskell
+{-# LANGUAGE QuasiQuotes #-}
+module MovieSearchSite.ErrorController
+    ( errorController
+    ) where
+
+import MovieSearchSite.Router
+    ( MovieRoute
+    )
+import MovieSearchSite.Exceptions
+    ( MethodNotAllowedException(..)
+    , NotFoundException(..)
+    )
+import Network.HTTP.Server
+    ( StatusCode(..)
+    )
+import Control.Exception
+    ( fromException
+    , SomeException
+    )
+import Text.Hamlet
+    ( hamlet
+    , HtmlUrl
+    )
+
+errorController :: SomeException -> (StatusCode, String, HtmlUrl MovieRoute)
+errorController err
+    | Just (MethodNotAllowedException method) <- fromException err =
+          ( MethodNotAllowed
+          , "Method Not Allowed"
+          , [hamlet|
+                <h1>Method Not Allowed<br/>
+                    <small>Method: #{show method}
+            |]
+          )
+    | Just (NotFoundException path) <- fromException err =
+          ( NotFound
+          , "Not Found"
+          , [hamlet|
+                <h1>Not Found<br/>
+                    <small>Path: #{path}
+            |]
+          )
+    | otherwise =
+          ( InternalServerError
+          , "Unknown Error"
+          , [hamlet|
+                <h1>Unknown Error
+                    <small>#{show err}
+            |]
+          )
+```
+
+
+
+Custom `Exception` instances which we can Monadic `throwError` to serve appropriate error responses. Can contain data like the "Not Found" path or what HTTP method was not allowed (e.g. HTTP POST), src/MovieSearchSite/Exceptions.hs :
+
+```haskell
+module MovieSearchSite.Exceptions
+    ( MethodNotAllowedException(..)
+    , NotFoundException(..)
+    ) where
+
+import Control.Exception
+    ( Exception
+    , PatternMatchFail
+    )
+import Network.HTTP.Server
+    ( RequestMethod
+    )
+
+newtype MethodNotAllowedException = MethodNotAllowedException
+    { notAllowedMethod :: RequestMethod
+    } deriving (Show)
+newtype NotFoundException = NotFoundException
+    { notFoundPath :: String
+    } deriving (Show)
+
+instance Exception MethodNotAllowedException
+instance Exception NotFoundException
+```
+
+
+
+Router which maps defined routes to their controllers and also renders URLs which will navigate to those routes, src/MovieSearchSite/Router.hs :
+
+```haskell
+module MovieSearchSite.Router
+    ( router
+    , renderRoute
+    , MovieRoute(..)
+    ) where
+
+import MovieSearchSite.Home
+    ( homeController
+    )
+import MovieSearchSite.Search
+    ( searchController
+    )
+import MovieSearchSite.Title
+    ( titleController
+    )
+import Network.HTTP.Types
+    ( renderQueryText
+    )
+import Data.Text
+    ( append
+    , pack
+    )
+import Data.Text.Encoding
+    ( decodeUtf8
+    )
+import Blaze.ByteString.Builder
+    ( toByteString
+    )
+    
+data MovieRoute =
+    Home
+        | Search String
+        | Title Int
+
+router "/"      []              = homeController
+router "/"      [("q", query)]  = searchController query
+router "/title" [("t", tconst)]
+    | Just tconst <- read tconst = titleController tconst
+
+renderRoute route _ =
+    case route of
+        Home            -> withQueryString Nothing
+        Search query    -> withQueryString $ Just ("q", query)
+        Title tconst    -> withQueryString $ Just ("t", show tconst)
+
+    where
+    withQueryString Nothing             = pack "/"
+    withQueryString (Just (key, value)) =
+        withQueryString Nothing `append`
+            decodeUtf8 (toByteString $ renderQueryText True [(pack key, Just $ pack value)])
+```
+
+
+
+Unfinished "Home" controller for the root of the website, src/MovieSearchSite/Home.hs :
+
+```haskell
+{-# LANGUAGE QuasiQuotes #-}
+module MovieSearchSite.Home
+    ( homeController
+    ) where
+
+import Control.Exception
+    ( SomeException
+    )
+import Control.Monad.Except
+    ( ExceptT
+    )
+import Text.Hamlet
+    ( hamlet
+    , HtmlUrl
+    )
+
+homeController :: ExceptT SomeException IO (String, HtmlUrl a)
+homeController =
+    return
+        ( "Home"
+        , [hamlet|
+                <h1>Home
+          |]
+        )
+```
+
+
+
+Unfinished "Search" controller for searching the website, src/MovieSearchSite/Search.hs :
+
+```haskell
+{-# LANGUAGE QuasiQuotes #-}
+module MovieSearchSite.Search
+    ( searchController
+    ) where
+
+import Control.Exception
+    ( SomeException
+    )
+import Control.Monad.Except
+    ( ExceptT
+    )
+import Text.Hamlet
+    ( hamlet
+    , HtmlUrl
+    )
+
+searchController :: String -> ExceptT SomeException IO (String, HtmlUrl a)
+searchController query =
+    return
+        ( "Search"
+        , [hamlet|
+                <h1>Search #{query}
+          |]
+        )
+```
+
+
+
+Unfinished "Title" controller for showing details for a single title, src/MovieSearchSite/Title.hs :
+
+```haskell
+{-# LANGUAGE QuasiQuotes #-}
+module MovieSearchSite.Title
+    ( titleController
+    ) where
+
+import Control.Exception
+    ( SomeException
+    )
+import Control.Monad.Except
+    ( ExceptT
+    )
+import Text.Hamlet
+    ( hamlet
+    , HtmlUrl
+    )
+
+titleController :: Int -> ExceptT SomeException IO (String, HtmlUrl a)
+titleController tconst =
+    return
+        ( "Title"
+        , [hamlet|
+                <h1>Title
+          |]
+        )
+```
+

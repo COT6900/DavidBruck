@@ -10,7 +10,6 @@ library
       CrudGenerator
   default-extensions:
       TemplateHaskell
-    , LambdaCase
   other-modules:
       Paths_CrudGenerator
   hs-source-dirs:

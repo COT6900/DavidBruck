@@ -3,6 +3,7 @@ packages:
 - .
 - ..\DatabaseHelpers
 - ..\CrudGenerator
+- ..\InitializeDatabase
 extra-deps:
 - direct-sqlite-2.3.26
 - process-1.6.8.0

@@ -66,6 +66,7 @@ import Language.Haskell.TH
     , normalB
     , guardedB
     , listP
+    , listE
     , appE
     , patGE
     , noBindS
@@ -97,7 +98,8 @@ generateCrud filePath = runIO getDatabaseSchema >>= crudFromSchema
         do dataTypes        <- generateDataTypes tables
            transformers     <- generateTransformers tables
            queries          <- generateQueries tables
-           return $ dataTypes ++ transformers ++ queries
+           inserts          <- generateInserts tables
+           return $ dataTypes ++ transformers ++ queries ++ inserts
 
     generateDataTypes []        = pure []
     generateDataTypes (x:xs)    =
@@ -114,14 +116,14 @@ generateCrud filePath = runIO getDatabaseSchema >>= crudFromSchema
            return (dataType : rest)
 
         where
-        unpackedTableName = unpack $ tableName x
-        capitalizedName = mkName $ capitalize unpackedTableName
-        lowecasedName = lowercase unpackedTableName
+        unpackedTableName   = unpack $ tableName x
+        capitalizedName     = mkName $ capitalize unpackedTableName
+        lowercasedName      = lowercase unpackedTableName
 
         crudFields []     = pure []
         crudFields (x:xs) =
             do field <- varBangType
-                            (mkName (lowecasedName ++ "_" ++ unpack (name x)))
+                            (mkName (lowercasedName ++ "_" ++ unpack (name x)))
                             (bangType
                                 (bang
                                     (pure NoSourceUnpackedness)
@@ -280,16 +282,15 @@ generateCrud filePath = runIO getDatabaseSchema >>= crudFromSchema
            return [emptySig, getEmpty]
 
     generateQueries (x:xs)  =
-        case tableType x of
-            Table       -> do tableQueries  <- generateTableQueries columns
-                              rest          <- generateQueries xs
-                              return $ tableQueries ++ rest
-            FullText    -> do fullText      <- generateFullTextQueries columns
-                              rest          <- generateQueries xs
-                              return $ fullText ++ rest
-            _           -> throw $ toException
-                               $ UnhandledSchemaException
-                               $ "unhandled SQL table type " ++ show x
+        do queries  <- case tableType x of
+                           Table       -> generateTableQueries columns
+                           FullText    -> generateFullTextQueries columns
+                           _           -> throw $ toException
+                                              $ UnhandledSchemaException
+                                              $ "unhandled SQL table type "
+                                                    ++ show x
+           rest     <- generateQueries xs
+           return $ queries ++ rest
 
         where
         (unpackedTableName, transformerName, columns) = commonTableProps x
@@ -466,6 +467,66 @@ generateCrud filePath = runIO getDatabaseSchema >>= crudFromSchema
                 escapeSQLiteName columnName ++
                 " MATCH ? ORDER BY rank" ++ limitSQL
 
+    generateInserts []      = pure []
+    generateInserts (x:xs)  =
+        do insert   <- generateInsert
+           rest     <- generateInserts xs
+           return $ insert : rest
+
+        where
+        (unpackedTableName, _, columns) = commonTableProps x
+        lowercasedName  = lowercase unpackedTableName
+        insertName      = "insert" ++ capitalize unpackedTableName
+        insertColumns   = intercalate ", "
+                              $ map
+                                    (escapeSQLiteName . unpack . name)
+                                    columns
+        insertSQL       = "INSERT INTO " ++
+                              escapeSQLiteName unpackedTableName ++
+                              " (" ++ insertColumns ++ ") VALUES (" ++
+                              intercalate ", " (replicate
+                                                   (length columns)
+                                                   "?") ++
+                              ")"
+        param column    =
+            do let columnName       = unpack (name column)
+               let lowercasedColumn = mkName $ lowercase columnName
+               let valueName        = mkName $ lowercasedName ++ "_" ++
+                                          columnName
+               let getColumn        = [e| $(varE valueName)
+                                              $(varE $ mkName lowercasedName) |]
+               columnTypeTextOrInt
+                   (case notnull column of
+                        1  -> [e| SQLText $ pack $(getColumn) |]
+                        _  -> [e| case $(getColumn) of
+                                      Just $(varP lowercasedColumn) ->
+                                          SQLText $ pack $(varE lowercasedColumn)
+                                      Nothing -> SQLNull |])
+                   (case notnull column of
+                        1  -> [e| SQLInteger $ fromIntegral $(getColumn) |]
+                        _  -> [e| case $(getColumn) of
+                                      Just $(varP lowercasedColumn) ->
+                                          SQLInteger $ fromIntegral
+                                              $(varE lowercasedColumn)
+                                      Nothing -> SQLNull |])
+                   column
+
+        generateInsert =
+            do let (_, _, connName) = commonQueryNames
+               let paramNames       = map makeColumnName columns
+               funD
+                   (mkName insertName)
+                   [clause
+                        [ varP $ mkName lowercasedName
+                        , varP connName
+                        ]
+                        (normalB [e| databaseQuery
+                                         $(stringE insertSQL)
+                                         $(varE connName)
+                                         $(listE $ map param columns)
+                                         (\_ -> pure ()) |])
+                        []]
+
     limitSQL                = " LIMIT ?"
     lowerCaseColumn         = lowercase . unpack . name
     makeColumnName          = mkName . lowerCaseColumn
@@ -488,7 +549,7 @@ generateCrud filePath = runIO getDatabaseSchema >>= crudFromSchema
             _           -> onText
 
         where
-        columnType = type' column
+        columnType          = type' column
         unhandledColumnType = throw $ toException
                                   $ UnhandledSchemaException
                                   $ "unhandled SQL column type " ++
