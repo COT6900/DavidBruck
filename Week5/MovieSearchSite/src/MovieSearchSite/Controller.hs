@@ -1,13 +1,17 @@
 module MovieSearchSite.Controller
     ( controller
+    , Router
     ) where
 
-import MovieSearchSite.Router
+import MovieSearchSite.MovieRoute
     ( MovieRoute
     )
 import MovieSearchSite.Exceptions
     ( MethodNotAllowedException(..)
     , NotFoundException(..)
+    )
+import MovieSearchSite.Response
+    ( HtmlResponse
     )
 import Control.Monad.Except
     ( when
@@ -33,18 +37,17 @@ import Control.Exception
 import Control.Monad.Catch
     ( catchIf
     )
-import Control.Error.Util
-    ( syncIO
-    )
 import Data.ByteString.Lazy
     ( ByteString
     )
-import Text.Hamlet
-    ( HtmlUrl
-    )
+    
+type Router =
+    String -> [(String, String)] ->
+    ExceptT SomeException IO HtmlResponse
 
-controller :: (String -> [(String, String)] -> ExceptT SomeException IO (String, HtmlUrl MovieRoute)) -> URL -> Request ByteString ->
-    ExceptT SomeException IO (String, HtmlUrl MovieRoute)
+controller ::
+    Router -> URL -> Request ByteString ->
+    ExceptT SomeException IO HtmlResponse
 controller router url request =
     do let method   = rqMethod request
        let path     = url_path url
@@ -61,7 +64,7 @@ controller router url request =
         | otherwise                                     = False
 
     catchNotFound :: SomeException ->
-                         ExceptT SomeException IO (String, HtmlUrl MovieRoute)
+                         ExceptT SomeException IO HtmlResponse
     catchNotFound _     = throwError $ toException $ NotFoundException
                               $ exportPath params
     method              = rqMethod request

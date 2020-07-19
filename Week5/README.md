@@ -1,4 +1,4 @@
-### David Bruck COT6900 - Week 5, 6, 7
+### David Bruck COT6900 - Week 5, 6, 7, 8
 
 ### Database helpers for SQLite
 
@@ -1094,8 +1094,12 @@ CrudGenerator/Example.hs :
     Select first 100 rows with Haskell (still in GHCI):
         runExceptT $ (getTitles 100) `withDatabase` "IMDB.db"
 
-    To see the fields and their types inside of a table's data type,
-    just change Titles to the desired table's Pascal-Cased name:
+    To see the fields and their types inside of a table's data type:
+        First, run command to import Template Haskell namespace:
+        import Language.Haskell.TH
+
+        Second, just change Titles/TitlesSearch to the desired table's
+            Pascal-Cased name:
         putStrLn $(stringE . pprint =<< reify ''Titles)
         putStrLn $(stringE . pprint =<< reify ''TitlesSearch)
 
@@ -1114,6 +1118,12 @@ $(generateCrud "IMDB.db")
 
 
 ### Parse IMDB's Database of Titles Into SQLite
+
+PopulateDatabase populates an IMDB.db from the entire IMDB titles database. It may be easier to download a copy already populated with the following code:  
+[https://github.com/COT6900/DavidBruck/releases/tag/IMDB.db](https://github.com/COT6900/DavidBruck/releases/tag/IMDB.db)  
+Under Assets, download the file IMDB.db. It needs to be in the current directory whenever running applications like MovieSearchSite below. It will be obvious because an empty database will produce a home page of the website with message "No Titles" otherwise.
+
+
 
 **Prerequisite:** in order to use CrudGenerator for Template Haskell, the database must already exist with the expected Schema; therefore, I created a Cabal custom build which also runs InitializeDatabase for the current directory to create IMDB.db in the expected format if it does not already exist.
 
@@ -1495,25 +1505,21 @@ main = do result <- runExceptT $ initializeDatabase `withDatabase` "IMDB.db"
 
 ### Movie Search Site (HTTP Server hosting IMDB.db)
 
-Work-in-progress, able to route HTTP "GET" requests. Relying on Haskell's own function pattern matching, any attempt to route which fails throws `PatternMatchFail` which we can catch and turn into an HTTP "Not Found" (404) response. Split into a hopefully near-final architecture, but still need to use CrudGenerator, read from the IMDB.db, and create the final HTML pages.
-
-
-
 **Prerequisite:** in order to use CrudGenerator for Template Haskell, the database must already exist with the expected Schema; therefore, I created a Cabal custom build which also runs InitializeDatabase for the current directory to create IMDB.db in the expected format if it does not already exist.
 
 MovieSearchSite/Setup.hs is identical to PopulateDatabase/Setup.hs from earlier.
 
+**Prerequisite:** requires the IMDB.db populated from previous application PopulateDatabase which also has a link to GitHub to download it already-populated as well.
 
 
-The executable itself which starts the server and chooses what router, controller, errorController, and base response (headers and outer HTML that wraps the body).
+
+The executable for MovieSearchSite starts the server and chooses what router, controller, errorController, and base response (headers and outer HTML that wraps the body).
 
 **Note:** be careful, when the server is running, it appears to capture standard input somehow. It does not respond to Ctrl+C to kill the executable so you will have to kill the process via another mechanism.
 
 MovieSearchSite/app/Main.hs :
 
 ```haskell
-{-# LANGUAGE QuasiQuotes #-}
-{-# LANGUAGE LambdaCase #-}
 module Main where
 
 import MovieSearchSite.Controller
@@ -1524,7 +1530,9 @@ import MovieSearchSite.ErrorController
     )
 import MovieSearchSite.Router
     ( router
-    , renderRoute
+    )
+import MovieSearchSite.Html
+    ( html
     )
 import Network.HTTP.Server
     ( serverWith
@@ -1533,35 +1541,14 @@ import Network.HTTP.Server
     , Response(..)
     , StatusCode(..)
     )
-import Network.HTTP.Server.Response
-    ( reason
-    , statusCodeTriplet
-    )
 import Network.HTTP.Server.Logger
     ( stdLogger
-    )
-import Network.HTTP.Headers
-    ( Header(..)
-    , HeaderName(..)
     )
 import Control.Monad.Except
     ( runExceptT
     )
-import Data.ByteString.Lazy
-    ( length
-    )
 import Data.Time.Clock
     ( getCurrentTime
-    )
-import Data.Time.Format
-    ( formatTime
-    , defaultTimeLocale
-    )
-import Text.Hamlet
-    ( hamlet
-    )
-import Text.Blaze.Html.Renderer.Utf8
-    ( renderHtml
     )
 
 main = serverWith
@@ -1574,47 +1561,26 @@ main = serverWith
     where
     handler _ url request =
         do result <- runExceptT (controller router url request) >>=
-                         \case
-                             Right (page, body) -> pure (OK, page, body)
-                             Left err           -> return $ errorController err
+                         either (return . errorController) return
            html result <$> getCurrentTime
-
-        where
-        html (code, page, body) now =
-            Response
-            { rspCode    = statusCodeTriplet code
-            , rspReason  = reason code
-            , rspHeaders = makeHeaders
-            , rspBody    = resp
-            }
-
-            where
-            resp =
-                renderHtml $ [hamlet|
-                        $doctype 5
-                            <html>
-                                <head>
-                                    <title>Movie Search Site - #{page}
-                                    <link rel="icon" href="data:,">
-                                <body>
-                                    ^{body}
-                    |]
-                    renderRoute
-
-            makeHeaders =
-                [ Header HdrDate rfc1123Date
-                , Header HdrExpires "-1"
-                , Header HdrCacheControl "no-store"
-                , Header HdrContentType "text/html; charset=utf-8"
-                , Header HdrServer "COT6900 DavidBruck MovieSearchSite"
-                , Header HdrContentLength $ show $
-                      Data.ByteString.Lazy.length resp
-                ]
-
-                where
-                rfc1123Date =
-                    formatTime defaultTimeLocale "%a, %_d %b %Y %H:%M:%S GMT" now
 ```
+
+
+
+MovieSearchSite executable also uses a module library of the same name. It contains various submodules with listed purposes:
+
+1. MovieSearchSite.Controller.hs : takes a router, and the URL/Request from the Server handler function, and attempts to run the route
+2. ErrorController.hs : produces HTML responses particular to expected types of failures, easily extensible to catch additional types of custom exceptions which can be thrown anywhere from controller routes
+3. Exceptions.hs : custom exceptions used in the library
+4. Home.hs : the root of the website, or path `/`
+5. Html.hs : takes an HTML response and turns it into a `Network.HTTP.Server.Response`, wrapping with a shared HTML template and adding common headers
+6. IMDBCrud.hs : tuns `CrudGenerator.generateCrud` Template Haskell to generate SQLite select operations
+7. MovieRoute.hs : defines the datatype of the same name for all possible typed routes; e.g. Search route takes a string for running a query, and Title takes an integer identifier of the record in database table `titles`
+8. Response.hs : defines the datatype for HtmlResponses as well as a default `okResponse` that just sends status code 200 / OK to the client
+9. Router.hs : defines all routes and can generate full paths with query strings which will match its own routes
+10. Search.hs : page for running a user-provided query to search database table `titles`
+11. ShowTitles.hs : shared component which displays a table of records from database table `titles`
+12. Title.hs : page for showing additional details for a selected record from database table `titles`
 
 
 
@@ -1625,14 +1591,18 @@ src/MovieSearchSite/Controller.hs :
 ```haskell
 module MovieSearchSite.Controller
     ( controller
+    , Router
     ) where
 
-import MovieSearchSite.Router
+import MovieSearchSite.MovieRoute
     ( MovieRoute
     )
 import MovieSearchSite.Exceptions
     ( MethodNotAllowedException(..)
     , NotFoundException(..)
+    )
+import MovieSearchSite.Response
+    ( HtmlResponse
     )
 import Control.Monad.Except
     ( when
@@ -1658,18 +1628,17 @@ import Control.Exception
 import Control.Monad.Catch
     ( catchIf
     )
-import Control.Error.Util
-    ( syncIO
-    )
 import Data.ByteString.Lazy
     ( ByteString
     )
-import Text.Hamlet
-    ( HtmlUrl
-    )
+    
+type Router =
+    String -> [(String, String)] ->
+    ExceptT SomeException IO HtmlResponse
 
-controller :: (String -> [(String, String)] -> ExceptT SomeException IO (String, HtmlUrl MovieRoute)) -> URL -> Request ByteString ->
-    ExceptT SomeException IO (String, HtmlUrl MovieRoute)
+controller ::
+    Router -> URL -> Request ByteString ->
+    ExceptT SomeException IO HtmlResponse
 controller router url request =
     do let method   = rqMethod request
        let path     = url_path url
@@ -1686,7 +1655,7 @@ controller router url request =
         | otherwise                                     = False
 
     catchNotFound :: SomeException ->
-                         ExceptT SomeException IO (String, HtmlUrl MovieRoute)
+                         ExceptT SomeException IO HtmlResponse
     catchNotFound _     = throwError $ toException $ NotFoundException
                               $ exportPath params
     method              = rqMethod request
@@ -1706,12 +1675,15 @@ module MovieSearchSite.ErrorController
     ( errorController
     ) where
 
-import MovieSearchSite.Router
+import MovieSearchSite.MovieRoute
     ( MovieRoute
     )
 import MovieSearchSite.Exceptions
     ( MethodNotAllowedException(..)
     , NotFoundException(..)
+    )
+import MovieSearchSite.Response
+    ( HtmlResponse(..)
     )
 import Network.HTTP.Server
     ( StatusCode(..)
@@ -1725,32 +1697,35 @@ import Text.Hamlet
     , HtmlUrl
     )
 
-errorController :: SomeException -> (StatusCode, String, HtmlUrl MovieRoute)
+errorController :: SomeException -> HtmlResponse
 errorController err
     | Just (MethodNotAllowedException method) <- fromException err =
-          ( MethodNotAllowed
-          , "Method Not Allowed"
-          , [hamlet|
+          HtmlResponse
+          { respCode    = MethodNotAllowed
+          , respTitle   = "Method Not Allowed"
+          , respBody    = [hamlet|
                 <h1>Method Not Allowed<br/>
                     <small>Method: #{show method}
             |]
-          )
+          }
     | Just (NotFoundException path) <- fromException err =
-          ( NotFound
-          , "Not Found"
-          , [hamlet|
+          HtmlResponse
+          { respCode    = NotFound
+          , respTitle   = "Not Found"
+          , respBody    = [hamlet|
                 <h1>Not Found<br/>
-                    <small>Path: #{path}
+                    <small>Path: /#{path}
             |]
-          )
+          }
     | otherwise =
-          ( InternalServerError
-          , "Unknown Error"
-          , [hamlet|
+          HtmlResponse
+          { respCode    = InternalServerError
+          , respTitle   = "Unknown Error"
+          , respBody    = [hamlet|
                 <h1>Unknown Error
                     <small>#{show err}
             |]
-          )
+          }
 ```
 
 
@@ -1784,15 +1759,220 @@ instance Exception NotFoundException
 
 
 
+Root of the application for path `/` which displays the first 20 records from the database (in clustered index order, which happen to be the oldest in the source data), src/MovieSearchSite/Home.hs :
+
+```haskell
+{-# LANGUAGE QuasiQuotes #-}
+module MovieSearchSite.Home
+    ( homeController
+    ) where
+
+import MovieSearchSite.Response
+    ( okResponse
+    , HtmlResponse(..)
+    )
+import MovieSearchSite.ShowTitles
+    ( showTitles
+    )
+import MovieSearchSite.IMDBCrud
+import DatabaseHelpers
+    ( withDatabase
+    )
+import Control.Exception
+    ( SomeException
+    )
+import Control.Monad.Except
+    ( ExceptT
+    )
+import Text.Hamlet
+    ( hamlet
+    )
+
+homeController :: ExceptT SomeException IO HtmlResponse
+homeController =
+    do firstTitles <- getTitles 20 `withDatabase` "IMDB.db"
+       return $ okResponse
+           { respTitle = "Home"
+           , respBody = [hamlet|
+                 <h1>Home
+                 ^{showTitles firstTitles}
+             |]
+           }
+```
+
+
+
+Converter for custom HTML response to `Network.HTTP.Server.Response` and wraps with shared HTML template and adds common headers, src/MovieSearchSite/Html.hs :
+
+```haskell
+{-# LANGUAGE QuasiQuotes #-}
+module MovieSearchSite.Html
+    ( html
+    ) where
+
+import MovieSearchSite.Response
+    ( HtmlResponse(..)
+    )
+
+import MovieSearchSite.Router
+    ( renderRoute
+    )
+import MovieSearchSite.MovieRoute
+    ( MovieRoute(..)
+    )
+import Network.HTTP.Server
+    ( Response(..)
+    , StatusCode(..)
+    )
+import Network.HTTP.Server.Response
+    ( reason
+    , statusCodeTriplet
+    )
+import Network.HTTP.Headers
+    ( Header(..)
+    , HeaderName(..)
+    )
+import Data.ByteString.Lazy
+    ( length
+    , ByteString
+    )
+import Data.Time.Format
+    ( formatTime
+    , defaultTimeLocale
+    , FormatTime
+    )
+import Text.Hamlet
+    ( hamlet
+    )
+import Text.Blaze.Html.Renderer.Utf8
+    ( renderHtml
+    )
+
+html :: (FormatTime t) => HtmlResponse -> t -> Response ByteString
+html (HtmlResponse code page body) now =
+    Response
+    { rspCode    = statusCodeTriplet code
+    , rspReason  = reason code
+    , rspHeaders = makeHeaders
+    , rspBody    = resp
+    }
+    where
+    resp =
+        renderHtml $ [hamlet|
+                $doctype 5
+                    <html>
+                        <head>
+                            <title>Movie Search Site - #{page}
+                            <link rel="icon" href="data:,">
+                        <body>
+                            <form action=@{Home}>Search: #
+                                <input name="q"/>
+                            <br>
+                            ^{body}
+                            <br>
+                            <footer>
+                                <b>COT6900 MovieSearchSite &copy; David Bruck
+                                <br>
+                                <a href="https://github.com/COT6900/DavidBruck/tree/master/Week5">
+                                    https://github.com/COT6900/DavidBruck/tree/master/Week5
+            |]
+            renderRoute
+
+    makeHeaders =
+        [ Header HdrDate rfc1123Date
+        , Header HdrExpires "-1"
+        , Header HdrCacheControl "no-store"
+        , Header HdrContentType "text/html; charset=utf-8"
+        , Header HdrServer "COT6900 DavidBruck MovieSearchSite"
+        , Header HdrContentLength $ show $
+              Data.ByteString.Lazy.length resp
+        ]
+
+        where
+        rfc1123Date =
+            formatTime defaultTimeLocale "%a, %_d %b %Y %H:%M:%S GMT" now
+```
+
+
+
+Template Haskell for using `CrudGenerator.generateCrud` to make the selects we use from the database, src/MovieSearchSite/IMDBCrud.hs :
+
+```haskell
+{-# LANGUAGE TemplateHaskell #-}
+module MovieSearchSite.IMDBCrud where
+
+import CrudGenerator
+    ( generateCrud 
+    )
+
+$(generateCrud "IMDB.db")
+```
+
+
+
+Data type defining typed routes in the application, Home takes no parameters, Search takes a string for querying, and Title takes the integer key for records in the database, src/MovieSearchSite/MovieRoute.hs :
+
+```haskell
+module MovieSearchSite.MovieRoute
+    ( MovieRoute(..)
+    ) where
+    
+data MovieRoute =
+    Home
+  | Search String
+  | Title Int
+```
+
+
+
+Custom data type representing an HTML response to send to the client as well as a default implementation for sending an HTTP status code 200 / OK response, src/MovieSearchSite/Response.hs :
+
+```haskell
+{-# LANGUAGE QuasiQuotes #-}
+module MovieSearchSite.Response
+    ( okResponse
+    , HtmlResponse(..)
+    ) where
+
+import MovieSearchSite.MovieRoute
+    ( MovieRoute
+    )
+import Network.HTTP.Server
+    ( StatusCode(..)
+    )
+import Text.Hamlet
+    ( hamlet
+    , HtmlUrl
+    )
+
+data HtmlResponse = HtmlResponse
+    { respCode  :: StatusCode
+    , respTitle :: String
+    , respBody  :: HtmlUrl MovieRoute
+    }
+
+okResponse = HtmlResponse
+    { respCode  = OK
+    , respTitle = "OK"
+    , respBody  = [hamlet|
+          <h1>OK
+      |]
+    }
+```
+
+
+
 Router which maps defined routes to their controllers and also renders URLs which will navigate to those routes, src/MovieSearchSite/Router.hs :
 
 ```haskell
 module MovieSearchSite.Router
     ( router
     , renderRoute
-    , MovieRoute(..)
     ) where
 
+import MovieSearchSite.MovieRoute
+    ( MovieRoute(..)
+    )
 import MovieSearchSite.Home
     ( homeController
     )
@@ -1815,64 +1995,34 @@ import Data.Text.Encoding
 import Blaze.ByteString.Builder
     ( toByteString
     )
-    
-data MovieRoute =
-    Home
-        | Search String
-        | Title Int
-
-router "/"      []              = homeController
-router "/"      [("q", query)]  = searchController query
-router "/title" [("t", tconst)]
-    | Just tconst <- read tconst = titleController tconst
-
-renderRoute route _ =
-    case route of
-        Home            -> withQueryString Nothing
-        Search query    -> withQueryString $ Just ("q", query)
-        Title tconst    -> withQueryString $ Just ("t", show tconst)
-
-    where
-    withQueryString Nothing             = pack "/"
-    withQueryString (Just (key, value)) =
-        withQueryString Nothing `append`
-            decodeUtf8 (toByteString $ renderQueryText True [(pack key, Just $ pack value)])
-```
-
-
-
-Unfinished "Home" controller for the root of the website, src/MovieSearchSite/Home.hs :
-
-```haskell
-{-# LANGUAGE QuasiQuotes #-}
-module MovieSearchSite.Home
-    ( homeController
-    ) where
-
-import Control.Exception
-    ( SomeException
-    )
 import Control.Monad.Except
     ( ExceptT
     )
-import Text.Hamlet
-    ( hamlet
-    , HtmlUrl
+import Text.Read
+    ( readMaybe
     )
 
-homeController :: ExceptT SomeException IO (String, HtmlUrl a)
-homeController =
-    return
-        ( "Home"
-        , [hamlet|
-                <h1>Home
-          |]
-        )
+router []       []                      = homeController
+router []       [("q", query)]          = searchController query
+router "title"  [("t", tconst)]
+    | Just tconst <- readMaybe tconst   = titleController tconst
+
+renderRoute route _ =
+    case route of
+        Home            -> pack "/"
+        Search query    -> pack "/" `withQueryString` ("q", query)
+        Title tconst    -> pack "/title" `withQueryString` ("t", show tconst)
+
+    where
+    withQueryString path (key, value) =
+        path `append`
+            decodeUtf8 (toByteString
+                $ renderQueryText True [(pack key, Just $ pack value)])
 ```
 
 
 
-Unfinished "Search" controller for searching the website, src/MovieSearchSite/Search.hs :
+Handles querying in the application for path `/?q=<query>` which displays the 20 records with best-ranked matches from the database by user-provided query, src/MovieSearchSite/Search.hs :
 
 ```haskell
 {-# LANGUAGE QuasiQuotes #-}
@@ -1880,6 +2030,17 @@ module MovieSearchSite.Search
     ( searchController
     ) where
 
+import MovieSearchSite.Response
+    ( okResponse
+    , HtmlResponse(..)
+    )
+import MovieSearchSite.ShowTitles
+    ( showTitles
+    )
+import MovieSearchSite.IMDBCrud
+import DatabaseHelpers
+    ( withDatabase
+    )
 import Control.Exception
     ( SomeException
     )
@@ -1888,22 +2049,85 @@ import Control.Monad.Except
     )
 import Text.Hamlet
     ( hamlet
-    , HtmlUrl
     )
 
-searchController :: String -> ExceptT SomeException IO (String, HtmlUrl a)
+searchController :: String -> ExceptT SomeException IO HtmlResponse
 searchController query =
-    return
-        ( "Search"
-        , [hamlet|
-                <h1>Search #{query}
-          |]
-        )
+    do matched <- searchTitles `withDatabase` "IMDB.db"
+       return $ okResponse
+           { respTitle = "Search"
+           , respBody = [hamlet|
+                 <h1>Search #{query}
+                 ^{showTitles matched}
+             |]
+           }
+
+    where
+    searchTitles conn =
+        do matchedIds <- map (fromIntegral . titlesSearch_rowid)
+                             <$> getTitlesSearchByPrimaryTitle query 20 conn
+           getTitlesByTconst matchedIds 20 conn
 ```
 
 
 
-Unfinished "Title" controller for showing details for a single title, src/MovieSearchSite/Title.hs :
+Shared component for displaying a table of titles retrieved from the database, src/MovieSearchSite/ShowTitles.hs :
+
+```haskell
+{-# LANGUAGE QuasiQuotes #-}
+module MovieSearchSite.ShowTitles
+    ( showTitles
+    ) where
+
+import MovieSearchSite.MovieRoute
+    ( MovieRoute(..)
+    )
+import MovieSearchSite.IMDBCrud
+import Text.Hamlet
+    ( hamlet
+    )
+
+showTitles titles =
+    [hamlet|
+        $if null titles
+            <div>
+                <b>No Titles
+        $else
+            <div>
+                <b>
+                    $if length titles == 20
+                        First #
+                    #{length titles} Titles:
+            <table>
+                <thead>
+                    <tr style="font-weight:bolder">^{headers}
+                <tbody>
+                    $forall title <- titles
+                        <tr>^{showTitle title}
+    |]
+
+    where
+    headers                     =
+        titleRow Nothing "Title" "Type"
+
+    showTitle title             =
+        titleRow
+            (Just $ titles_tconst title)
+            (titles_primaryTitle title)
+            (titles_titleType title)
+
+    titleRow tconst title type' = [hamlet|
+        <td>
+            $maybe tconst <- tconst
+                <a href=@{Title tconst}>Click here for Details
+        <td>#{title}
+        <td>#{type'}
+    |]
+```
+
+
+
+Handles displaying details for a particular database title in the application for path `/title?t=<database_id>` which displays the details for a record matched by ID; has a nice default behavior for showing not found since we are handling Haskell error `PatternMatchFail` to return an HTTP response 404 / NotFound, src/MovieSearchSite/Title.hs :
 
 ```haskell
 {-# LANGUAGE QuasiQuotes #-}
@@ -1911,6 +2135,17 @@ module MovieSearchSite.Title
     ( titleController
     ) where
 
+import MovieSearchSite.MovieRoute
+    ( MovieRoute(..)
+    )
+import MovieSearchSite.Response
+    ( okResponse
+    , HtmlResponse(..)
+    )
+import MovieSearchSite.IMDBCrud
+import DatabaseHelpers
+    ( withDatabase
+    )
 import Control.Exception
     ( SomeException
     )
@@ -1922,13 +2157,44 @@ import Text.Hamlet
     , HtmlUrl
     )
 
-titleController :: Int -> ExceptT SomeException IO (String, HtmlUrl a)
+titleController :: Int -> ExceptT SomeException IO HtmlResponse
 titleController tconst =
-    return
-        ( "Title"
-        , [hamlet|
-                <h1>Title
-          |]
-        )
-```
+    getTitlesByTconst [fromIntegral tconst] 1 `withDatabase` "IMDB.db"
+        >>= details
 
+    where
+    details [title] =
+        do let primaryTitle = titles_primaryTitle title
+           return $ okResponse
+               { respTitle = primaryTitle ++ " Details"
+               , respBody = [hamlet|
+                     <form action=@{Home}>
+                         <input type="submit" value="Back" />
+                     <br>
+                     <fieldset>
+                         <legend>#{primaryTitle} Details
+                         <label for="originalTitle">
+                             <b>Original Title:
+                         <span id="originalTitle">#{titles_originalTitle title}
+                         <br>
+                         <label for="type">
+                             <b>Title Type:
+                         <span id="type">#{titles_titleType title}
+                         $maybe startYear   <- titles_startYear title
+                             <br>
+                             <label for="startYear">
+                                 <b>Start Year:
+                             <span id="startYear">#{startYear}
+                         $maybe endYear     <- titles_endYear title 
+                             <br>   
+                             <label for="endYear">
+                                 <b>End Year:
+                             <span id="endYear">#{endYear}
+                         $maybe runningTime <- titles_runtimeMinutes title
+                             <br>
+                             <label for="runningTime">
+                                 <b>Running Time (minutes):
+                             <span id="runningTime">#{runningTime}
+                 |]
+               }
+```

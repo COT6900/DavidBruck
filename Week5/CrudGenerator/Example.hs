@@ -19,8 +19,12 @@
     Select first 100 rows with Haskell (still in GHCI):
         runExceptT $ (getTitles 100) `withDatabase` "IMDB.db"
 
-    To see the fields and their types inside of a table's data type,
-    just change Titles to the desired table's Pascal-Cased name:
+    To see the fields and their types inside of a table's data type:
+        First, run command to import Template Haskell namespace:
+        import Language.Haskell.TH
+
+        Second, just change Titles/TitlesSearch to the desired table's
+            Pascal-Cased name:
         putStrLn $(stringE . pprint =<< reify ''Titles)
         putStrLn $(stringE . pprint =<< reify ''TitlesSearch)
 
