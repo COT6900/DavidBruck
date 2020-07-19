@@ -10,7 +10,7 @@ The full LICENSE is included as file [LICENSE](LICENSE)
 
 [Week 4](Week4)
 
-[Week 5](Week5) - Work in progress. Able to use Template Haskell to create strongly typed Haskell datatypes based on table schema.
+[Week 5](Week5) - Took multiple weeks by itself.
 
 ##### Week 1:
 
@@ -157,14 +157,19 @@ https://wiki.haskell.org/A_practical_Template_Haskell_Tutorial
 Assignment exercises:  
    Write a Code Generator with Template Haskell to make object relational mapping (ORM) functions for CRUD operations on a database from a schema definition.
 
-*Work-in-progress:* Code Generator is only partially completely. Currently, it can create strongly typed Haskell datatypes based on table schema. However, it still was supposed to be able to dynamically create typed Query and Create/Insert functions. Neither the work to parse the IMDB database into SQLite nor to host the database on a website has yet been started.
+* Generates a Haskell datatype for each table based on the table's columns' names and Haskell-equivalent types. This provides type-safe access while preventing the need to check for `SQLNull` column values if the column's schema indicates it is not nullable (it's only `Maybe` if it needs to be).
+* For each normal table, generates a parameter-less query (but still takes a maximum `limit` of number of records to return) with first records in the order of the table's `rowid` (or primary key, if different).
+* For each table, generates queries for each table column taking a list of that column's Haskell-equivalent type (e.g. `String` or `Integer`). Along with a `limit` parameter again, finds up to that number of database records which match by any value in the list for its column.
+* For each "FullText" table, generates a query taking a `String` and runs special syntax `match` in the database (full-text index match), with each word in the query separately wildcarded (`*`). For example, "bob sled" would be converted to "bob* sled*" and be able to match records with values which include "Bob's Sleds".
+* For each table, generates an insert operation taking an instance of the corresponding datatype (same as returned in results from the queries).
+* Updates were not handled as the example website below only needed to read from an already fully-populated database.
 
 https://hackage.haskell.org/package/http-server  
 Assignment exercises:  
    IMDb is the world's most popular and authoritative source for movie, TV and celebrity content, designed to help fans explore the world of movies and shows and decide what to watch. Write two Haskell applications.  
+
 1. One which parses the IMDb dataset from https://datasets.imdbws.com/ into a database using the ORM-generated CRUD functions.
 2. A second which hosts a web application that reads the same database with the ORM-generated CRUD functions to display a paged list of movies and TV shows with the ability to search by title. Each entry should display:
    - Type of title (Short / Movie)
    - Year
    - Runtime duration
-   - Genres
