@@ -33,7 +33,7 @@
   `stack config set system-ghc --global true`  
   `stack config set resolver ghc-8.10.1`
 * Permanently ensure git.exe, stack.exe, and ghc.exe are on System path in MSYS, run command:  
-  `echo $'export "PATH=$PATH:/c/Program Files/Git:/c/stack-2.3.1-windows-x86_64:$(echo "$LOCALAPPDATA\\\\Programs\\\\stack\\\\x86_64-windows\\\\ghc-8.10.1\\\\bin" | sed -r -e \'s/\\\\/\\//g\' -e \'s/^([^:]+):/\\/\\1/\' -e \'s/\\/./\\L&/\')"' > ~/.profile`
+  `echo $'export "PATH=$PATH:/c/Program Files/Git/cmd:/c/stack-2.3.1-windows-x86_64:$(echo "$LOCALAPPDATA\\\\Programs\\\\stack\\\\x86_64-windows\\\\ghc-8.10.1\\\\bin" | sed -r -e \'s/\\\\/\\//g\' -e \'s/^([^:]+):/\\/\\1/\' -e \'s/\\/./\\L&/\')"' > ~/.profile`
 
 ##### Retest git.exe, stack.exe, and ghc.exe are on System path in MSYS
 
