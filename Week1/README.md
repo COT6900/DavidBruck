@@ -20,7 +20,7 @@
 * Run MSYS as Administrator:
   `C:\MinGW\msys\1.0\msys.bat`
 * Ensure git.exe and stack.exe are available on System path by appending environment variables \$PATH for MSYS with C:\Program Files\Git and C:\stack-2.3.1-windows-x86_64 with command:  
-  `export "PATH=$PATH:/c/Program Files/Git:/c/stack-2.3.1-windows-x86_64"`
+  `export "PATH=$PATH:/c/Program Files/Git/cmd:/c/stack-2.3.1-windows-x86_64"`
 * Test locations of git.exe and stack.exe with commands:  
   `where git.exe`  
   `where stack.exe`
