@@ -44,6 +44,7 @@
   `where git.exe`  
   `where stack.exe`  
   `where ghc.exe`
+** **NOTE:** if it does not find the locations, run the command again from previous section `Permanently ensure git.exe, stack.exe, and ghc.exe are on System path in MSYS` except change `> ~/.profile` to `>> /etc/profile` (doubling up the `>>` is important; this issue happens if you installed MSYS2 with MinGW instead of MinGW with MSYS2)
 * Test Stack is using ghc-8.10.1 with command:  
   `stack exec -- ghc --version`
   * It should not start downloading anything and should return almost instantly
