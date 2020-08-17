@@ -54,8 +54,10 @@
 
 * Run MSYS as Administrator (if not already running):  
   `C:\MinGW\msys\1.0\msys.bat`
-* Install hlint (at this time it does not build with the ghc-8.10.1 compiler so use prior LTS release instead) with command:  
+* Install hlint (at this time it does not build with the ghc-8.10.1 compiler so use prior LTS release which is ghc-8.8.X instead) with command:  
   `stack --resolver=lts-15.13 install hlint`
+* * If you get an error like `Access violation in generated code when writing 0x0` then try again with the following command instead:  
+    `stack --resolver=lts-15.13 --skip-ghc-check install hlint`
 
 ##### Build the Haskell Language Server
 
